@@ -1,0 +1,88 @@
+# Step 2: Convert HDF5 camera observations to MP4 videos
+# Adapted for OSMO 6.0.0 on g5.2xlarge (6 CPU, 20Gi memory, 80Gi storage)
+# Removed huggingface_token credential (not needed for HDF5→MP4 conversion)
+
+workflow:
+  name: hdf5-to-mp4-nutpour
+  tasks:
+  - name: hdf5-to-mp4-task
+    image: nvcr.io/nvidia/isaac-lab:2.3.0
+    command: ["bash"]
+    args: ["/tmp/entry.sh"]
+    environment:
+      ACCEPT_EULA: "Y"
+      OMNI_KIT_ALLOW_ROOT: "1"
+      NO_NUCLEUS: "Y"
+    files:
+    - contents: |
+        set -euxo pipefail
+
+        echo "=== System Info ==="
+        nvidia-smi
+
+        echo "=== Input Dataset Location ==="
+        echo "MimicGen output available at: /osmo/data/input/0"
+        ls -lah /osmo/data/input/0
+        find /osmo/data/input/0 -name "*.hdf5" -type f
+
+        INPUT_HDF5=$(find /osmo/data/input/0 -name "*.hdf5" -type f | head -n 1)
+        echo "Using input file: $INPUT_HDF5"
+        ls -lah "$INPUT_HDF5"
+
+        echo "=== Verify camera data exists in HDF5 ==="
+        cd /workspace/isaaclab
+        /workspace/isaaclab/_isaac_sim/python.sh << 'PYTHON_CHECK'
+        import h5py, sys
+        hdf5_file = sys.argv[1] if len(sys.argv) > 1 else None
+        import subprocess
+        result = subprocess.run(["find", "/osmo/data/input/0", "-name", "*.hdf5", "-type", "f"], capture_output=True, text=True)
+        hdf5_file = result.stdout.strip().split("\n")[0]
+        with h5py.File(hdf5_file, "r") as f:
+            demos = [k for k in f["data"].keys()]
+            print(f"Total demos: {len(demos)}")
+            demo_0 = f["data/demo_0"]
+            obs_keys = list(demo_0["obs"].keys())
+            print(f"Observation keys: {obs_keys}")
+            for key in obs_keys:
+                shape = demo_0["obs"][key].shape
+                print(f"  {key}: {shape}")
+        PYTHON_CHECK
+
+        echo "=== Convert HDF5 to MP4 videos ==="
+        # Try with all modalities first, fall back to RGB only
+        /workspace/isaaclab/_isaac_sim/python.sh scripts/tools/hdf5_to_mp4.py \
+          --input_file "$INPUT_HDF5" \
+          --output_dir /osmo/data/output/ \
+          --input_keys robot_pov_cam robot_pov_cam_depth \
+          --video_height 704 \
+          --video_width 1280 \
+          --framerate 30 || \
+        /workspace/isaaclab/_isaac_sim/python.sh scripts/tools/hdf5_to_mp4.py \
+          --input_file "$INPUT_HDF5" \
+          --output_dir /osmo/data/output/ \
+          --input_keys robot_pov_cam \
+          --video_height 704 \
+          --video_width 1280 \
+          --framerate 30
+
+        echo "=== Conversion complete ==="
+        ls -lah /osmo/data/output/
+        echo "Total MP4 files created:"
+        find /osmo/data/output/ -name "*.mp4" | wc -l
+        echo "=== DONE ==="
+      path: /tmp/entry.sh
+    inputs:
+    - dataset:
+        name: PhysAI-MimicGen
+    outputs:
+    - dataset:
+        name: PhysAI-MP4Videos
+  resources:
+    default:
+      cpu: 5
+      gpu: 1
+      memory: 20Gi
+      storage: 80Gi
+  timeout:
+    exec_timeout: 4h
+    queue_timeout: 1h

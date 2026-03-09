@@ -40,7 +40,8 @@ scripts/
 ├── azure/
 │   └── terraform.sh         # Azure-specific Terraform provisioning
 ├── aws/
-│   └── terraform.sh         # AWS-specific Terraform provisioning
+│   ├── terraform.sh         # AWS-specific Terraform provisioning
+│   └── auto-scale-idle.sh   # Auto scale-down for idle OSMO clusters
 └── README.md                # This file
 ```
 
@@ -150,6 +151,28 @@ AWS-specific Terraform provisioning:
 - VPC with public/private subnets
 - Security groups and IAM roles
 - kubectl configuration via `aws eks update-kubeconfig`
+
+### `aws/auto-scale-idle.sh`
+
+AWS cost guard for OSMO clusters. It checks OSMO workflow activity and, after an idle timeout:
+
+- Scales GPU/GROOT nodegroups to `desired=0`
+- Right-sizes CPU nodegroup(s) to a baseline desired count (default `1`)
+
+Useful when your workflows finish but EKS nodegroups remain at non-zero desired capacity.
+
+#### Quick usage
+
+```bash
+# One-time check (safe preview)
+./aws/auto-scale-idle.sh --once --cluster osmo --region us-west-2 --dry-run
+
+# Run continuously (poll every 60s)
+./aws/auto-scale-idle.sh --cluster osmo --region us-west-2 --idle-minutes 20
+
+# Install cron (every 5 minutes) so no manual scale-down is needed
+./aws/auto-scale-idle.sh --cluster osmo --region us-west-2 --install-cron --idle-minutes 20
+```
 
 ## Examples
 
@@ -354,4 +377,3 @@ az aks command invoke \
 - [OSMO Deployment Guide](https://nvidia.github.io/OSMO/main/deployment_guide/appendix/deploy_minimal.html)
 - [Configure Data Storage](https://nvidia.github.io/OSMO/main/deployment_guide/getting_started/configure_data_storage.html)
 - [Install KAI Scheduler](https://nvidia.github.io/OSMO/main/deployment_guide/byoc/install_dependencies.html)
-

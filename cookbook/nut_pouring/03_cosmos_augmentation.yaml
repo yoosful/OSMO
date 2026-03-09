@@ -25,9 +25,6 @@ workflow:
       - /tmp/entry.sh
       command:
       - bash
-      credentials:
-        huggingface_token:
-          HF_TOKEN: token
       environment:
         ACCEPT_EULA: Y
       files:
@@ -50,6 +47,10 @@ workflow:
           git clone https://github.com/nvidia-cosmos/cosmos-transfer2.5.git && cd cosmos-transfer2.5 && git checkout 0033b77a9e41e74f9d8d0b9cf80e0ecf94b3533b
           curl -LsSf https://astral.sh/uv/install.sh | sh && source $HOME/.local/bin/env
 
+          # Speed up extension builds on A100 nodes by targeting only sm80.
+          export TORCH_CUDA_ARCH_LIST="8.0"
+          export MAX_JOBS=8
+
           # Install all dependencies including cosmos_oss
           uv sync --extra=cu128
           source .venv/bin/activate
@@ -62,17 +63,49 @@ workflow:
           mkdir -p {{output}}
 
           echo "=== Running Cosmos Transfer 2.5 Augmentation ==="
-          git config --global credential.helper store && huggingface-cli login \
-            --token $HF_TOKEN --add-to-git-credential
 
           # Process each robot_pov_cam MP4 video
           echo "Processing MP4 videos from {{input:0}}"
+          MAX_DEMOS={{ max_demos }}
+          PREPROCESS_WIDTH={{ preprocess_width }}
+          PREPROCESS_HEIGHT={{ preprocess_height }}
+          PREPROCESS_MAX_FRAMES={{ preprocess_max_frames }}
+          INFERENCE_GPUS={{ num_gpu }}
+          NUM_STEPS={{ num_steps }}
+          DISABLE_GUARDRAILS_RAW={{ disable_guardrails }}
+          DISABLE_GUARDRAILS="${DISABLE_GUARDRAILS_RAW,,}"
+          ENABLE_PARALLEL_TOKENIZER_RAW={{ enable_parallel_tokenizer }}
+          ENABLE_PARALLEL_TOKENIZER="${ENABLE_PARALLEL_TOKENIZER_RAW,,}"
+          echo "MAX_DEMOS=${MAX_DEMOS}"
+          echo "PREPROCESS_WIDTH=${PREPROCESS_WIDTH}"
+          echo "PREPROCESS_HEIGHT=${PREPROCESS_HEIGHT}"
+          echo "PREPROCESS_MAX_FRAMES=${PREPROCESS_MAX_FRAMES}"
+          echo "INFERENCE_GPUS=${INFERENCE_GPUS}"
+          echo "NUM_STEPS=${NUM_STEPS}"
+          echo "DISABLE_GUARDRAILS=${DISABLE_GUARDRAILS}"
+          echo "ENABLE_PARALLEL_TOKENIZER=${ENABLE_PARALLEL_TOKENIZER}"
+          # Helps reduce fragmentation-related OOM on near-capacity runs.
+          export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
           # Create a temporary directory for spec files
           mkdir -p /tmp/cosmos_specs
 
-          # Loop through all demo MP4 files (RGB videos only, not depth)
-          for mp4_file in {{input:0}}/demo_*_robot_pov_cam.mp4; do
+          # Collect demo MP4 files (RGB videos only, not depth)
+          mapfile -t mp4_files < <(find {{input:0}} -type f -name "demo_*_robot_pov_cam.mp4" | sort)
+          mp4_count=$(printf '%s\n' "${mp4_files[@]}" | grep -c . || true)
+          if [[ "$mp4_count" -eq 0 ]]; then
+              echo "No input MP4 files found in {{input:0}}"
+              exit 1
+          fi
+
+          # Optional cap to keep this workflow reproducible on limited budgets.
+          if [[ "$MAX_DEMOS" -gt 0 && "$mp4_count" -gt "$MAX_DEMOS" ]]; then
+              mapfile -t mp4_files < <(printf '%s\n' "${mp4_files[@]}" | head -n "$MAX_DEMOS")
+          fi
+
+          successful=0
+          real_augmented=0
+          for mp4_file in "${mp4_files[@]}"; do
               # Skip depth videos - only process RGB videos
               if [[ "$mp4_file" == *"_depth.mp4" ]]; then
                   continue
@@ -83,9 +116,62 @@ workflow:
                   demo_name=$(basename "$mp4_file" .mp4)
                   echo "Demo name: $demo_name"
 
-                  # Find corresponding depth video
-                  depth_file="{{input:0}}/${demo_name}_depth.mp4"
+                  # Find corresponding depth video in the same directory
+                  depth_file="$(dirname "$mp4_file")/${demo_name}_depth.mp4"
                   echo "Depth video: $depth_file"
+                  if [[ ! -f "$depth_file" ]]; then
+                      echo "Depth video not found: $depth_file"
+                      exit 1
+                  fi
+
+                  # Downscale and clip videos to reduce Cosmos GPU memory pressure.
+                  mkdir -p /tmp/cosmos_input
+                  resized_rgb="/tmp/cosmos_input/${demo_name}_rgb_resized.mp4"
+                  resized_depth="/tmp/cosmos_input/${demo_name}_depth_resized.mp4"
+                  python3 << PYTHON_RESIZE
+          import cv2
+
+          def resize_video(src, dst, width, height, max_frames):
+              cap = cv2.VideoCapture(src)
+              fps = cap.get(cv2.CAP_PROP_FPS)
+              if fps <= 0:
+                  fps = 10.0
+              writer = cv2.VideoWriter(
+                  dst,
+                  cv2.VideoWriter_fourcc(*"mp4v"),
+                  float(fps),
+                  (int(width), int(height)),
+                  True,
+              )
+              count = 0
+              while count < int(max_frames):
+                  ok, frame = cap.read()
+                  if not ok:
+                      break
+                  frame = cv2.resize(frame, (int(width), int(height)), interpolation=cv2.INTER_AREA)
+                  writer.write(frame)
+                  count += 1
+              cap.release()
+              writer.release()
+              if count == 0:
+                  raise RuntimeError(f"No frames written for {src}")
+              print(f"Resized {src} -> {dst} frames={count}")
+
+          resize_video(
+              src="$mp4_file",
+              dst="$resized_rgb",
+              width=$PREPROCESS_WIDTH,
+              height=$PREPROCESS_HEIGHT,
+              max_frames=$PREPROCESS_MAX_FRAMES,
+          )
+          resize_video(
+              src="$depth_file",
+              dst="$resized_depth",
+              width=$PREPROCESS_WIDTH,
+              height=$PREPROCESS_HEIGHT,
+              max_frames=$PREPROCESS_MAX_FRAMES,
+          )
+          PYTHON_RESIZE
 
                   # Create custom spec file for this demo
                   # Based on the robot_example spec but with our input video
@@ -102,38 +188,74 @@ workflow:
               spec = json.load(f)
 
           # Update paths to use our input videos (RGB and depth)
-          spec['video_path'] = "$mp4_file"
+          spec['video_path'] = "$resized_rgb"
 
           # Update depth control path
           if 'depth' in spec:
-              spec['depth']['control_path'] = "$depth_file"
+              spec['depth']['control_path'] = "$resized_depth"
 
           with open("$spec_file", 'w') as f:
               json.dump(spec, f, indent=2)
 
           print(f"Created spec file: $spec_file")
-          print(f"  RGB video: $mp4_file")
-          print(f"  Depth video: $depth_file")
+          print(f"  RGB video: $resized_rgb")
+          print(f"  Depth video: $resized_depth")
           PYTHON_SPEC
 
-                  # Run Cosmos Transfer 2.5 inference with custom spec
-                  python /workspace/cosmos-transfer2.5/examples/inference.py \
-                    -i "$spec_file" \
-                    -o /workspace/cosmos-transfer2.5/outputs \
-                    || echo "Warning: Processing failed for $demo_name"
+                  rm -rf /workspace/cosmos-transfer2.5/outputs/*
 
-                  # Copy generated videos from Cosmos default output to OSMO output
-                  if [ -d "/workspace/cosmos-transfer2.5/outputs" ]; then
-                      echo "Copying outputs from /workspace/cosmos-transfer2.5/outputs to {{output}}/${demo_name}/"
-                      mkdir -p {{output}}/${demo_name}
-                      cp -r /workspace/cosmos-transfer2.5/outputs/* {{output}}/${demo_name}/ || echo "No outputs found in /workspace/cosmos-transfer2.5/outputs"
+                  # Run Cosmos Transfer 2.5 inference with custom spec
+          infer_common_args=(-i "$spec_file" -o /workspace/cosmos-transfer2.5/outputs --context_parallel_size "$INFERENCE_GPUS" --num_steps "$NUM_STEPS")
+                  if [[ "$DISABLE_GUARDRAILS" == "true" ]]; then
+                    infer_common_args+=(--disable_guardrails)
+                  fi
+                  if [[ "$ENABLE_PARALLEL_TOKENIZER" == "true" && "$INFERENCE_GPUS" -gt 1 ]]; then
+                    infer_common_args+=(--enable_parallel_tokenizer)
+                  fi
+                  if [[ "$INFERENCE_GPUS" -gt 1 ]]; then
+                    infer_cmd=(torchrun --nproc_per_node="$INFERENCE_GPUS" --master_port=12341 /workspace/cosmos-transfer2.5/examples/inference.py "${infer_common_args[@]}")
+                  else
+                    infer_cmd=(python /workspace/cosmos-transfer2.5/examples/inference.py "${infer_common_args[@]}")
+                  fi
+                  echo "Inference command: ${infer_cmd[*]}"
+                  if "${infer_cmd[@]}"; then
+                      :
+                  else
+                      echo "Inference failed for $demo_name"
+                      exit 1
+                  fi
+
+                  # Keep the primary generated video and skip auxiliary control renders.
+                  generated_mp4=$(find /workspace/cosmos-transfer2.5/outputs -type f -name "*.mp4" ! -name "*control*" | sort | head -n 1 || true)
+                  if [[ -z "$generated_mp4" ]]; then
+                      echo "No generated MP4 found for $demo_name"
+                      exit 1
+                  fi
+
+                  cp "$generated_mp4" {{output}}/${demo_name}.mp4
+
+                  # Keep paired depth videos so downstream conversion has matching modalities.
+                  if [[ -f "$depth_file" ]]; then
+                      cp "$depth_file" {{output}}/${demo_name}_depth.mp4
                   fi
 
                   echo "Completed: $demo_name"
+                  successful=$((successful + 1))
+                  real_augmented=$((real_augmented + 1))
               fi
           done
 
           echo "=== Cosmos Transfer 2.5 Augmentation Complete ==="
+          echo "Successful demos: ${successful}"
+          echo "Real augmented demos: ${real_augmented}"
+          if [[ "$real_augmented" -eq 0 ]]; then
+            echo "No real Cosmos-augmented demos generated. Failing workflow."
+            exit 1
+          fi
+          if [[ "$successful" -eq 0 ]]; then
+            echo "No augmented demos generated. Failing workflow."
+            exit 1
+          fi
           echo "Output directory contents:"
           ls -lah {{output}}
           echo "Total output files:"
@@ -143,18 +265,20 @@ workflow:
         path: /tmp/entry.sh
       image: nvcr.io/nvidia/cosmos/cosmos-predict2-container:1.2
       inputs:
-      - dataset: {{ input_dataset }}
+      - dataset:
+          name: {{ input_dataset }}
       lead: true
       name: cosmos_transfer_augmentation
       outputs:
-      - dataset: {{ output_dataset }}
+      - dataset:
+          name: {{ output_dataset }}
   name: cosmos_transfer_augmentation
   resources:
     default:
       cpu: 30
-      gpu: 1
-      memory: 128Gi
-      storage: 256Gi
+      gpu: {{ num_gpu }}
+      memory: {{ memory }}
+      storage: {{ storage }}
   timeout:
     exec_timeout: 3d
     queue_timeout: 1d
@@ -162,3 +286,15 @@ workflow:
 default-values:
   input_dataset: PhysAI-MP4Videos
   output_dataset: PhysAI-CosmosAugmentedMP4
+  # Default to single-GPU inference for reliability on this cluster;
+  # users can override with --set num_gpu=<N> once multi-GPU NCCL is stable.
+  num_gpu: 1
+  num_steps: 20
+  disable_guardrails: true
+  enable_parallel_tokenizer: true
+  memory: 768Gi
+  storage: 512Gi
+  max_demos: 1
+  preprocess_width: 320
+  preprocess_height: 176
+  preprocess_max_frames: 32

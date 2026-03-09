@@ -27,88 +27,110 @@ workflow:
       - bash
       files:
       - contents: |-
-          set -ex
+          set -euxo pipefail
 
           nvidia-smi
 
-          # Install Dependencies
+          # Install dependencies
           export DEBIAN_FRONTEND=noninteractive
           export TZ=America/Los_Angeles
           apt update && \
               apt install -y tzdata && \
               ln -fs /usr/share/zoneinfo/America/Los_Angeles /etc/localtime && \
-              apt install -y netcat dnsutils && \
               apt-get update && \
               apt-get install -y libgl1-mesa-glx git libvulkan-dev \
-              zip unzip wget curl git git-lfs build-essential cmake \
-              vim less sudo htop ca-certificates man tmux ffmpeg tensorrt \
+              zip unzip wget curl git-lfs build-essential cmake \
+              ca-certificates ffmpeg \
               libglib2.0-0 libsm6 libxext6 libxrender-dev
 
           git clone https://github.com/NVIDIA/Isaac-GR00T.git && \
             cd Isaac-GR00T && \
-            git checkout 796ca8d87360913c47e9f75e17c11d63f7805048
+            git checkout {{ gr00t_ref }}
 
-          pip install --upgrade setuptools && \
-            pip install gpustat wandb==0.19.0 && \
-            pip install -e .[base] && \
-            pip install jupyterlab==4.0.10
-
-          pip uninstall -y transformer-engine && \
-            pip install flash_attn==2.7.1.post4 -U --force-reinstall && \
-            pip uninstall -y opencv-python opencv-python-headless || true && \
-            rm -rf /usr/local/lib/python3.10/dist-packages/cv2 || true && \
-            pip install opencv-python==4.8.0.74 && \
-            pip install --force-reinstall torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 numpy==1.26.4
-
-          pip install -e . --no-deps && \
-            pip install accelerate>=0.26.0
-
-          # Install torchcodec (if needed)
-          pip install torchcodec || true
+          pip install --upgrade pip setuptools wheel
+          pip install -e .[base]
+          pip install --force-reinstall torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 numpy==1.26.4 typing_extensions==4.12.2 einops==0.8.1
+          pip install ninja packaging
+          pip install flash_attn==2.7.1.post4 --no-build-isolation --no-deps -U --force-reinstall
+          pip install --force-reinstall torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 numpy==1.26.4 typing_extensions==4.12.2 einops==0.8.1
+          pip install 'accelerate>=0.26.0' huggingface_hub
 
           # Set output directory
           export OUTPUT_DIR={{output}}
-          mkdir -p $OUTPUT_DIR
+          mkdir -p "$OUTPUT_DIR"
+
+          # Resolve LeRobot dataset path from mounted input (dataset name may add one directory level).
+          DATASET_PATH="{{input:0}}/nut_pouring_task/lerobot"
+          if [[ ! -d "$DATASET_PATH" ]]; then
+            DATASET_PATH=$(find {{input:0}} -type f -path "*/lerobot/meta/info.json" -printf '%h\n' | sed 's#/meta$##' | head -n 1 || true)
+          fi
+          if [[ -z "${DATASET_PATH:-}" || ! -d "$DATASET_PATH" ]]; then
+            echo "Failed to locate LeRobot dataset under {{input:0}}"
+            find {{input:0}} -maxdepth 6 -type d | head -n 200 || true
+            exit 1
+          fi
+
+          echo "Using dataset path: $DATASET_PATH"
+          find "$DATASET_PATH" -maxdepth 3 -type f | head -n 50 || true
 
           echo "Running GR00T finetuning with single GPU..."
+          echo "dataset_path=$DATASET_PATH" > "$OUTPUT_DIR/run_metadata.txt"
 
           # Run training
           python scripts/gr00t_finetune.py \
-              --dataset-path {{input:0}}/nut_pouring_task/lerobot \
-              --output-dir $OUTPUT_DIR \
-              --data-config fourier_gr1_arms_only \
-              --batch-size 32 \
-              --max-steps 10000 \
-              --num-gpus 1 \
-              --save-steps 1000 \
-              --base-model-path nvidia/GR00T-N1.5-3B \
+              --dataset-path "$DATASET_PATH" \
+              --output-dir "$OUTPUT_DIR" \
+              --data-config {{ data_config }} \
+              --batch-size {{ batch_size }} \
+              --max-steps {{ max_steps }} \
+              --num-gpus {{ train_num_gpus }} \
+              --save-steps {{ save_steps }} \
+              --base-model-path {{ base_model_path }} \
               --no-tune-llm \
               --tune-visual \
               --tune-projector \
               --tune-diffusion-model \
               --no-resume \
-              --dataloader-num-workers 12 \
+              --dataloader-num-workers {{ dataloader_num_workers }} \
               --report-to tensorboard \
-              --embodiment-tag gr1
+              --embodiment-tag {{ embodiment_tag }}
+
+          echo "=== Training artifacts ==="
+          find "$OUTPUT_DIR" -maxdepth 4 -type f | head -n 100 || true
         path: /tmp/entry.sh
       image: pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel
       inputs:
-      - dataset: {{ input_dataset }}
+      - dataset:
+          name: {{ input_dataset }}
       lead: true
       name: master
       outputs:
-      - dataset: {{ output_dataset }}
+      - dataset:
+          name: {{ output_dataset }}
   name: groot_finetune_nut_pouring
   resources:
     default:
-      cpu: 64
-      gpu: 1
-      memory: 512Gi
-      storage: 256Gi
+      cpu: {{ num_cpu }}
+      gpu: {{ num_gpu }}
+      memory: {{ memory }}
+      storage: {{ storage }}
   timeout:
-    exec_timeout: 7d
+    exec_timeout: 24h
     queue_timeout: 2d
 
 default-values:
   input_dataset: PhysAI-LeRobotDataset
   output_dataset: PhysAI-GR00T-Finetuned
+  gr00t_ref: 796ca8d87360913c47e9f75e17c11d63f7805048
+  base_model_path: nvidia/GR00T-N1.5-3B
+  data_config: fourier_gr1_arms_only
+  embodiment_tag: gr1
+  batch_size: 1
+  max_steps: 1
+  save_steps: 1
+  dataloader_num_workers: 0
+  train_num_gpus: 1
+  num_cpu: 30
+  num_gpu: 1
+  memory: 128Gi
+  storage: 256Gi

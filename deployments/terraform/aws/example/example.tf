@@ -136,6 +136,81 @@ module "eks" {
 
       tags = local.tags
     }
+
+    gpu = {
+      name = "${local.name}-gpu-nodes"
+
+      min_size     = 0
+      max_size     = 1
+      desired_size = 0
+
+      # g5.12xlarge/16xlarge provide sufficient headroom for Steps 1-5
+      # (max requirement: 128Gi for Cosmos Transfer).
+      # Step 6 (GROOT fine-tuning) needs a separate p4d/p5 nodegroup with 512Gi+ RAM
+      instance_types = ["g5.12xlarge", "g5.16xlarge"]
+      ami_type       = "AL2_x86_64_GPU"
+      capacity_type  = "ON_DEMAND"
+
+      # 500GB root volume for large container images (Isaac Sim ~20GB, Cosmos ~30GB+)
+      # and intermediate workflow data (HDF5 datasets can be multi-GB)
+      block_device_mappings = {
+        xvda = {
+          device_name = "/dev/xvda"
+          ebs = {
+            volume_size           = 500
+            volume_type           = "gp3"
+            delete_on_termination = true
+          }
+        }
+      }
+
+      k8s_labels = {
+        NodeGroup    = "${local.name}-gpu-nodes"
+        "nvidia.com/gpu.present" = "true"
+      }
+
+      update_config = {
+        max_unavailable_percentage = 50
+      }
+
+      tags = merge(local.tags, { GpuNode = "true" })
+    }
+
+    groot = {
+      name = "${local.name}-groot-nodes"
+
+      min_size     = 0
+      max_size     = 1
+      desired_size = 0
+
+      # Step 6 (GROOT fine-tuning) requests 512Gi memory and GPU.
+      # p4d.24xlarge provides sufficient headroom.
+      instance_types = ["p4d.24xlarge"]
+      ami_type       = "AL2_x86_64_GPU"
+      capacity_type  = "ON_DEMAND"
+
+      block_device_mappings = {
+        xvda = {
+          device_name = "/dev/xvda"
+          ebs = {
+            volume_size           = 1000
+            volume_type           = "gp3"
+            delete_on_termination = true
+          }
+        }
+      }
+
+      k8s_labels = {
+        NodeGroup                = "${local.name}-groot-nodes"
+        "nvidia.com/gpu.present" = "true"
+      }
+
+      update_config = {
+        max_unavailable_percentage = 50
+      }
+
+      tags = merge(local.tags, { GrootNode = "true" })
+    }
   }
 
   # EKS Access Entries (replaces aws-auth ConfigMap in module v20+)

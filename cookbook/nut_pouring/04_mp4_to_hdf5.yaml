@@ -36,15 +36,15 @@ workflow:
       ACCEPT_EULA: Y
       OMNI_KIT_ALLOW_ROOT: 1
       NO_NUCLEUS: Y
-    credentials:
-      huggingface_token:
-        HF_TOKEN: token
 
     inputs:
-    - dataset: {{ input_dataset_mimic_gen}}
-    - dataset: {{ input_dataset_cosmos_augmented_mp4}}
+    - dataset:
+        name: {{ input_dataset_mimic_gen}}
+    - dataset:
+        name: {{ input_dataset_cosmos_augmented_mp4}}
     outputs:
-    - dataset: {{ output_dataset }}
+    - dataset:
+        name: {{ output_dataset }}
 
     args:
     - /tmp/entry.sh
@@ -74,11 +74,103 @@ workflow:
           INPUT_HDF5=$(find {{input:0}} -name "*.hdf5" -type f | head -n 1)
           echo "Using reference HDF5: $INPUT_HDF5"
 
-          echo "=== Convert augmented MP4 back to HDF5 ==="
-          /workspace/isaaclab/_isaac_sim/python.sh scripts/tools/mp4_to_hdf5.py \
-            --input_file $INPUT_HDF5 \
-            --videos_dir {{input:1}} \
-            --output_file {{output}}/cosmos_augmented_dataset.hdf5
+          echo "=== Locate augmented MP4 videos directory ==="
+          VIDEOS_DIR=$(find {{input:1}} -type f -name "demo_*_robot_pov_cam.mp4" -printf '%h\n' | sort -u | head -n 1 || true)
+          if [[ -z "$VIDEOS_DIR" ]]; then
+            echo "No augmented RGB MP4 files found under {{input:1}}"
+            find {{input:1}} -maxdepth 4 -type f | head -n 100 || true
+            exit 1
+          fi
+          echo "Using videos directory: $VIDEOS_DIR"
+
+          echo "=== Convert augmented MP4 back to HDF5 (nut-pouring schema aware) ==="
+          export INPUT_HDF5
+          export VIDEOS_DIR
+          export OUTPUT_HDF5={{output}}/cosmos_augmented_dataset.hdf5
+          /workspace/isaaclab/_isaac_sim/python.sh << 'PYTHON_CONVERT'
+          import os
+          import re
+          import cv2
+          import h5py
+          import numpy as np
+
+          input_hdf5 = os.environ["INPUT_HDF5"]
+          videos_dir = os.environ["VIDEOS_DIR"]
+          output_hdf5 = os.environ["OUTPUT_HDF5"]
+
+          rgb_regex = re.compile(r"demo_(\d+)_robot_pov_cam\.mp4$")
+
+          def read_rgb_frames(video_path, target_t, target_h, target_w):
+              cap = cv2.VideoCapture(video_path)
+              frames = []
+              while True:
+                  ok, frame = cap.read()
+                  if not ok:
+                      break
+                  frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                  if frame.shape[0] != target_h or frame.shape[1] != target_w:
+                      frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+                  frames.append(frame.astype(np.uint8))
+              cap.release()
+
+              if not frames:
+                  raise RuntimeError(f"No frames decoded from {video_path}")
+
+              arr = np.stack(frames, axis=0)
+              if arr.shape[0] > target_t:
+                  arr = arr[:target_t]
+              elif arr.shape[0] < target_t:
+                  pad = np.repeat(arr[-1:], target_t - arr.shape[0], axis=0)
+                  arr = np.concatenate([arr, pad], axis=0)
+              return arr
+
+          rgb_files = []
+          for name in sorted(os.listdir(videos_dir)):
+              if rgb_regex.match(name):
+                  rgb_files.append(os.path.join(videos_dir, name))
+
+          if not rgb_files:
+              raise RuntimeError(f"No RGB demo videos found in {videos_dir}")
+
+          with h5py.File(input_hdf5, "r") as f_in, h5py.File(output_hdf5, "w") as f_out:
+              f_in.copy("data", f_out)
+
+              existing_ids = sorted(int(k.split("_")[1]) for k in f_in["data"].keys() if k.startswith("demo_"))
+              next_demo_id = max(existing_ids) + 1
+              print(f"Starting new demos from ID: {next_demo_id}")
+
+              created = 0
+              for rgb_path in rgb_files:
+                  name = os.path.basename(rgb_path)
+                  match = rgb_regex.match(name)
+                  if match is None:
+                      continue
+                  orig_demo_id = int(match.group(1))
+                  src_group = f"data/demo_{orig_demo_id}"
+                  dst_group = f"data/demo_{next_demo_id}"
+                  if src_group not in f_out:
+                      raise RuntimeError(f"Source demo not found in input dataset: {src_group}")
+
+                  # Duplicate original demo, then replace only RGB camera frames with augmented video.
+                  f_out.copy(src_group, dst_group)
+
+                  rgb_ds = f_out[f"{dst_group}/obs/robot_pov_cam"]
+                  target_t, target_h, target_w = rgb_ds.shape[0], rgb_ds.shape[1], rgb_ds.shape[2]
+                  new_rgb = read_rgb_frames(rgb_path, target_t, target_h, target_w)
+                  if rgb_ds.shape[-1] == 1:
+                      new_rgb = np.mean(new_rgb, axis=-1, keepdims=True).astype(np.uint8)
+                  rgb_ds[...] = new_rgb
+
+                  f_out[dst_group].attrs["num_samples"] = target_t
+                  print(f"Created augmented demo_{next_demo_id} from demo_{orig_demo_id} using {name}")
+
+                  next_demo_id += 1
+                  created += 1
+
+              print(f"Augmented demos added: {created}")
+
+          print(f"Augmented data saved to {output_hdf5}")
+          PYTHON_CONVERT
 
           echo "=== Verify output HDF5 ==="
           /workspace/isaaclab/_isaac_sim/python.sh << PYTHON_CHECK

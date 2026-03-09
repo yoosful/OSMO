@@ -29,3 +29,22 @@ docs/**/domain_config.js
 .ruff_cache
 
 .lycheecache
+
+.ipynb_checkpoints
+.terraform
+
+# Local editor/auth state
+.claude/
+.huggingface
+
+# Local report artifacts
+.report_assets/
+/SESSION_NOTES.md
+/Nut_Pouring_Pipeline_Report.pptx
+/OSMO_Reproducibility_Report.pptx
+
+# Local Terraform state/secrets for the AWS example
+/deployments/terraform/aws/example/.terraform.lock.hcl
+/deployments/terraform/aws/example/terraform.tfstate
+/deployments/terraform/aws/example/terraform.tfstate.backup
+/deployments/terraform/aws/example/terraform.tfvars

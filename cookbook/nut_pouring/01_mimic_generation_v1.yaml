@@ -1,0 +1,77 @@
+# Adapted from 01_mimic_generation.yaml for OSMO 6.0.0 (v1 workflow format)
+# Reduced CPU from 16 to 7 to fit on g5.2xlarge (8 vCPU allocatable)
+# Usage: osmo workflow submit 01_mimic_generation_v1.yaml --pool default
+
+workflow:
+  name: mimic-gen-nutpour
+  tasks:
+  - name: mimic-task
+    image: nvcr.io/nvidia/isaac-lab:2.3.0
+    command: ["bash"]
+    args: ["/tmp/entry.sh"]
+    environment:
+      ACCEPT_EULA: "Y"
+    files:
+    - contents: |
+        set -euxo pipefail
+
+        echo "=== Dataset Location ==="
+        echo "Dataset available at: {{input:0}}"
+        ls -lah {{input:0}}
+        echo ""
+
+        echo "=== Finding HDF5 file ==="
+        HDF5_FILE=$(find {{input:0}} -name "*.hdf5" -type f | head -n 1)
+        echo "Found: $HDF5_FILE"
+        ls -lah "$HDF5_FILE"
+        echo ""
+
+        echo "=== Copying nutpour_gr1t2_base_env_cfg.py ==="
+        cp /tmp/nutpour_gr1t2_base_env_cfg.py /workspace/isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/pick_place/
+        echo ""
+
+        echo "=== Setting up Isaac Lab ==="
+        cd /workspace/isaaclab
+        mkdir -p ./datasets
+
+        echo "=== Running MimicGen Dataset Generation ==="
+        echo "NOTE: Using --num_envs 2 and --generation_num_trials 50 for resource-constrained test"
+        ./isaaclab.sh -p scripts/imitation_learning/isaaclab_mimic/generate_dataset.py \
+          --device cpu \
+          --headless \
+          --enable_pinocchio \
+          --enable_cameras \
+          --rendering_mode balanced \
+          --task Isaac-NutPour-GR1T2-Pink-IK-Abs-Mimic-v0 \
+          --generation_num_trials 50 \
+          --num_envs 2 \
+          --input_file "$HDF5_FILE" \
+          --output_file ./datasets/generated_dataset_gr1_nut_pouring.hdf5
+
+        echo ""
+        echo "=== Dataset Generation Complete ==="
+        ls -lah ./datasets/
+
+        echo ""
+        echo "=== Copying output ==="
+        cp ./datasets/generated_dataset_gr1_nut_pouring.hdf5 {{output}}/
+        ls -lah {{output}}/
+        echo "=== DONE ==="
+      path: /tmp/entry.sh
+    - localpath: nutpour_gr1t2_base_env_cfg.py
+      path: /tmp/nutpour_gr1t2_base_env_cfg.py
+    inputs:
+    - dataset:
+        name: PhysAI-InputMimic
+    outputs:
+    - dataset:
+        name: PhysAI-MimicGen
+  resources:
+    default:
+      cpu: 6
+      gpu: 1
+      memory: 20Gi
+      storage: 30Gi
+  timeout:
+    exec_timeout: 4h
+    queue_timeout: 1h

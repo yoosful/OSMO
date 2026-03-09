@@ -38,10 +38,12 @@ workflow:
       OMNI_KIT_ALLOW_ROOT: 1
 
     inputs:
-    - dataset: {{ input_dataset }}
+    - dataset:
+        name: {{ input_dataset }}
 
     outputs:
-    - dataset: {{ output_dataset }}
+    - dataset:
+        name: {{ output_dataset }}
 
     command: ["bash"]
     args: ["/tmp/entry.sh"]
@@ -49,20 +51,14 @@ workflow:
     - path: /tmp/entry.sh
       contents: |
 
-          set -e
-          set -euxo pipefail
-          # Hide conflicting vulkan files, if needed
-          if [ -e "/usr/share/vulkan" ] && [ -e "/etc/vulkan" ]; then
-            mv /usr/share/vulkan /usr/share/vulkan_hidden
-          fi
+          set -euo pipefail
 
-          # Create function for isaaclab.sh
           isaaclab_python() {
             /workspace/isaaclab/isaaclab.sh -p "$@"
           }
 
-          pwd
-          cd ..
+          echo "=== System Info ==="
+          nvidia-smi || true
 
           apt-get update && apt-get install -y \
             git \
@@ -70,64 +66,57 @@ workflow:
             libsm6 \
             libxext6
 
-          # Install IsaacLabEvalTasks
-          git clone https://github.com/isaac-sim/IsaacLabEvalTasks.git
-          cd IsaacLabEvalTasks/
-          sed -i 's/git@github.com:/https:\/\/github.com\//' .gitmodules
-          git submodule init
-          git submodule update --recursive
+          echo "=== Clone IsaacLabEvalTasks ==="
+          cd /workspace
+          git clone --depth 1 https://github.com/isaac-sim/IsaacLabEvalTasks.git
+          cd IsaacLabEvalTasks/scripts
 
-          echo "IsaacLabEvalTasks Cloned successfully ..."
+          # Keep the IsaacLab runtime stable: install only missing lightweight deps.
+          if ! isaaclab_python - <<'PY'
+          import importlib.util
+          import sys
+          modules = ["numpy", "h5py", "pandas", "tyro", "torchvision", "tqdm", "yaml", "cv2", "pyarrow", "av"]
+          missing = [m for m in modules if importlib.util.find_spec(m) is None]
+          print("Missing modules:", ",".join(missing) if missing else "none")
+          sys.exit(1 if missing else 0)
+          PY
+          then
+            isaaclab_python -m pip install --no-cache-dir \
+              pandas \
+              tyro \
+              tqdm \
+              pyyaml \
+              opencv-python-headless \
+              pyarrow \
+              av==12.3.0
+          fi
 
-          # Submodule locked gr00t to N1
-          cd submodules/Isaac-GR00T
-          isaaclab_python -m pip install --upgrade setuptools
-          isaaclab_python -m pip install -e .[base]
-          # isaaclab_python -m pip install --no-build-isolation flash-attn==2.7.1.post4
-          export PYTHONPATH=${PYTHONPATH:-}:IsaacLabEvalTasks/submodules/Isaac-GR00T
-
-          echo "Installed Isaac-GR00T"
-
-          # verify gr00t is installed
-          isaaclab_python -c "import gr00t; print('gr00t imported successfully')"
-
-          echo "Verified Isaac-GR00T"
-
-          # Within IsaacLabEvalTasks directory
-          echo "Installing IsaacLabEvalTasks"
-
-          echo "Changing directory to IsaacLabEvalTasks"
-
-          cd ../..
-          isaaclab_python -m pip install -e source/isaaclab_eval_tasks
-          echo "Installed IsaacLabEvalTasks"
-
-          # Display info on the system
-          nvidia-smi
-
-          # Prepare dataset directory
+          echo "=== Prepare Input HDF5 ==="
           DATASET_DIR=/tmp/dataset_conversion
-          mkdir -p $DATASET_DIR
+          mkdir -p "$DATASET_DIR"
+          HDF5_FILE=$(find {{input:0}} -name "*.hdf5" -type f | head -n 1 || true)
+          if [[ -z "$HDF5_FILE" ]]; then
+            echo "No HDF5 file found in {{input:0}}"
+            exit 1
+          fi
+          echo "Using HDF5: $HDF5_FILE"
+          cp "$HDF5_FILE" "$DATASET_DIR/nut_pouring_task.hdf5"
 
-          # Find the HDF5 file
-          HDF5_FILE=$(find {{input:0}} -name "*.hdf5" -type f | head -n 1)
-          echo "Found HDF5 file: $HDF5_FILE"
-
-          # Create the expected filename for the script
-          cp $HDF5_FILE $DATASET_DIR/nut_pouring_task.hdf5
-
-          # Run data conversion script with the full path
-          # First try to see what arguments are available
-          isaaclab_python scripts/convert_hdf5_to_lerobot.py --help || true
-
-          # Run with inferred arguments based on tyro conventions
-          isaaclab_python scripts/convert_hdf5_to_lerobot.py \
+          echo "=== Convert HDF5 to LeRobot ==="
+          isaaclab_python convert_hdf5_to_lerobot.py \
             --task-name nutpouring \
-            --data-root $DATASET_DIR
+            --data-root "$DATASET_DIR"
 
-          # Copy converted dataset to output
-          mkdir -p {{output}}
-          cp -r $DATASET_DIR/nut_pouring_task {{output}}/
+          if [[ ! -d "$DATASET_DIR/nut_pouring_task/lerobot" ]]; then
+            echo "LeRobot output directory missing after conversion"
+            find "$DATASET_DIR" -maxdepth 4 -type f | head -n 50 || true
+            exit 1
+          fi
+
+          echo "=== Export Output Dataset ==="
+          mkdir -p {{output}}/nut_pouring_task
+          cp -r "$DATASET_DIR/nut_pouring_task/lerobot" {{output}}/nut_pouring_task/
+          find {{output}} -maxdepth 5 -type f | head -n 50 || true
 
 
 # Update default values
