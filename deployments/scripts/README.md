@@ -20,6 +20,13 @@ SPDX-License-Identifier: Apache-2.0
 
 This directory contains scripts for deploying OSMO on various cloud providers.
 
+For the AWS/EKS nut-pouring reproduction workflow carried in this branch, use the repo-root helpers:
+
+```bash
+NGC_API_KEY=<your-ngc-api-key> ./osmo-deploy.sh
+./osmo-run-nut-pouring.sh --input-hdf5 ./dataset_annotated_gr1_nut_pouring.hdf5
+```
+
 ## Quick Start
 
 ```bash

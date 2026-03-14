@@ -80,6 +80,8 @@ curl -O https://download.isaacsim.omniverse.nvidia.com/isaaclab/dataset/dataset_
 osmo dataset upload PhysAI-InputMimic dataset_annotated_gr1_nut_pouring.hdf5
 ```
 
+For the report-aligned AWS/EKS reproduction path, see [REPORT_REPRODUCTION.md](./REPORT_REPRODUCTION.md).
+
 Execute each step sequentially:
 
 ```bash
@@ -87,10 +89,10 @@ mkdir -p nut_pouring && cd nut_pouring
 curl https://codeload.github.com/NVIDIA/OSMO/tar.gz/main | tar -xz --strip=4 OSMO-main/cookbook/nut_pouring
 
 # Step 1: MimicGen data generation
-osmo workflow submit 01_mimic_generation.yaml
+osmo workflow submit 01_mimic_generation_v1.yaml
 
 # Step 2: HDF5 to MP4 conversion
-osmo workflow submit 02_hdf5_to_mp4.yaml
+osmo workflow submit 02_hdf5_to_mp4_v1.yaml
 
 # Step 3: Cosmos Transfer augmentation
 osmo workflow submit 03_cosmos_augmentation.yaml
@@ -102,7 +104,7 @@ osmo workflow submit 04_mp4_to_hdf5.yaml
 osmo workflow submit 05_lerobot_conversion.yaml
 
 # Step 6: GROOT fine-tuning
-osmo workflow submit 06_groot_finetune.yaml
+osmo workflow submit 06_groot_finetune.yaml --set max_steps=1
 ```
 
 ## Configuration

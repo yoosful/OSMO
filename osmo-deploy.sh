@@ -49,6 +49,8 @@ OSMO_WORKFLOWS_NAMESPACE="${OSMO_WORKFLOWS_NAMESPACE:-osmo-workflows}"
 OSMO_IMAGE_REGISTRY="${OSMO_IMAGE_REGISTRY:-nvcr.io/nvidia/osmo}"
 OSMO_IMAGE_TAG="${OSMO_IMAGE_TAG:-latest}"
 BACKEND_TOKEN_EXPIRY="${BACKEND_TOKEN_EXPIRY:-2027-01-01}"
+NGC_API_KEY="${NGC_API_KEY:-}"
+IMAGE_PULL_SECRET_NAME="${IMAGE_PULL_SECRET_NAME:-ngc-registry}"
 
 SKIP_TERRAFORM=false
 SKIP_GPU=false
@@ -57,7 +59,7 @@ PREFLIGHT_ONLY=false
 # Bug #8 fix: deterministic bucket name (set after load_tfvars populates CLUSTER_NAME)
 S3_BUCKET_NAME="${S3_BUCKET_NAME:-}"
 
-# Bug #2/11 fix: dev mode auth uses x-osmo-user header, no token needed
+# Dev mode auth uses x-osmo-user header, no token needed
 OSMO_AUTH_HEADER="x-osmo-user: testuser"
 
 ###############################################################################
@@ -70,8 +72,9 @@ while [[ $# -gt 0 ]]; do
         --skip-gpu)        SKIP_GPU=true; shift ;;
         --preflight-only)  PREFLIGHT_ONLY=true; shift ;;
         --repo-root)       REPO_ROOT="$2"; shift 2 ;;
+        --ngc-api-key)     NGC_API_KEY="$2"; shift 2 ;;
         -h|--help)
-            echo "Usage: $0 [--skip-terraform] [--skip-gpu] [--preflight-only] [--repo-root PATH]"
+            echo "Usage: $0 [--skip-terraform] [--skip-gpu] [--preflight-only] [--repo-root PATH] [--ngc-api-key KEY]"
             exit 0
             ;;
         *) shift ;;
@@ -134,6 +137,10 @@ preflight() {
     if [[ ! -f "$TERRAFORM_DIR/terraform.tfvars" ]]; then
         log_error "terraform.tfvars not found at $TERRAFORM_DIR/terraform.tfvars"
         exit 1
+    fi
+
+    if [[ -z "$NGC_API_KEY" ]]; then
+        log_warn "NGC_API_KEY is not set. Helm charts may deploy, but nvcr.io image pulls can fail."
     fi
 
     log_success "Pre-flight checks passed"
@@ -280,10 +287,18 @@ create_namespaces() {
 }
 
 add_helm_repos() {
-    log_info "Step 2: Adding Helm repository..."
-    helm repo add osmo https://helm.ngc.nvidia.com/nvidia/osmo || true
-    helm repo update
-    log_success "Helm repos updated"
+    log_info "Step 2: Verifying local Helm charts..."
+    for chart_dir in \
+        "$REPO_ROOT/deployments/charts/service" \
+        "$REPO_ROOT/deployments/charts/web-ui" \
+        "$REPO_ROOT/deployments/charts/router" \
+        "$REPO_ROOT/deployments/charts/backend-operator"; do
+        if [[ ! -d "$chart_dir" ]]; then
+            log_error "Missing chart directory: $chart_dir"
+            exit 1
+        fi
+    done
+    log_success "Local Helm charts verified"
 }
 
 create_secrets() {
@@ -320,6 +335,19 @@ data:
     meks:
       key1: $encoded_jwk
 EOF
+
+    if [[ -n "$NGC_API_KEY" ]]; then
+        for secret_ns in "$OSMO_NAMESPACE" "$OSMO_OPERATOR_NAMESPACE" "$OSMO_WORKFLOWS_NAMESPACE"; do
+            kubectl delete secret "$IMAGE_PULL_SECRET_NAME" -n "$secret_ns" --ignore-not-found
+            kubectl create secret docker-registry "$IMAGE_PULL_SECRET_NAME" \
+                --docker-server=nvcr.io \
+                --docker-username='$oauthtoken' \
+                --docker-password="$NGC_API_KEY" \
+                --docker-email='unused@example.com' \
+                -n "$secret_ns"
+        done
+        log_success "NGC image pull secrets created"
+    fi
 
     log_success "Secrets and MEK created"
 }
@@ -391,6 +419,7 @@ generate_values_files() {
 global:
   osmoImageLocation: ${OSMO_IMAGE_REGISTRY}
   osmoImageTag: ${OSMO_IMAGE_TAG}
+  imagePullSecret: ${IMAGE_PULL_SECRET_NAME}
 services:
   configFile:
     enabled: true
@@ -440,6 +469,7 @@ EOF
 global:
   osmoImageLocation: ${OSMO_IMAGE_REGISTRY}
   osmoImageTag: ${OSMO_IMAGE_TAG}
+  imagePullSecret: ${IMAGE_PULL_SECRET_NAME}
 services:
   ui:
     replicas: 1
@@ -458,6 +488,7 @@ EOF
 global:
   osmoImageLocation: ${OSMO_IMAGE_REGISTRY}
   osmoImageTag: ${OSMO_IMAGE_TAG}
+  imagePullSecret: ${IMAGE_PULL_SECRET_NAME}
 services:
   configFile:
     enabled: true
@@ -487,7 +518,8 @@ EOF
 global:
   osmoImageLocation: ${OSMO_IMAGE_REGISTRY}
   osmoImageTag: ${OSMO_IMAGE_TAG}
-  serviceUrl: http://osmo-agent.${OSMO_NAMESPACE}.svc.cluster.local
+  imagePullSecret: ${IMAGE_PULL_SECRET_NAME}
+  serviceUrl: http://osmo-service.${OSMO_NAMESPACE}.svc.cluster.local:80
   agentNamespace: ${OSMO_OPERATOR_NAMESPACE}
   backendNamespace: ${OSMO_WORKFLOWS_NAMESPACE}
   backendName: default
@@ -521,15 +553,15 @@ EOF
 helm_deploy() {
     log_info "Step 6: Deploying OSMO via Helm..."
 
-    helm upgrade --install osmo-minimal osmo/service \
+    helm upgrade --install osmo-minimal "$REPO_ROOT/deployments/charts/service" \
         -f "$VALUES_DIR/service_values.yaml" \
         --namespace "$OSMO_NAMESPACE" --wait --timeout 10m
 
-    helm upgrade --install ui-minimal osmo/web-ui \
+    helm upgrade --install ui-minimal "$REPO_ROOT/deployments/charts/web-ui" \
         -f "$VALUES_DIR/ui_values.yaml" \
         --namespace "$OSMO_NAMESPACE" --wait --timeout 5m
 
-    helm upgrade --install router-minimal osmo/router \
+    helm upgrade --install router-minimal "$REPO_ROOT/deployments/charts/router" \
         -f "$VALUES_DIR/router_values.yaml" \
         --namespace "$OSMO_NAMESPACE" --wait --timeout 5m
 
@@ -597,7 +629,7 @@ setup_backend_operator() {
     fi
 
     # Deploy operator
-    helm upgrade --install osmo-operator osmo/backend-operator \
+    helm upgrade --install osmo-operator "$REPO_ROOT/deployments/charts/backend-operator" \
         -f "$VALUES_DIR/backend_operator_values.yaml" \
         --namespace "$OSMO_OPERATOR_NAMESPACE" --wait --timeout 5m
 
