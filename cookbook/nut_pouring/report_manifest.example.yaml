@@ -1,0 +1,338 @@
+title: NVIDIA OSMO
+subtitle: Physical AI Nut Pouring
+report_title: Cookbook Reproduction Report
+environment: OSMO v6.0.0 on AWS/EKS
+report_date: 2026-02-25
+result: all six steps completed with validated outputs
+artifact_pack_dir: .report_assets
+
+scope_points:
+  - One end-to-end cookbook execution path for nut_pouring
+  - Per-step runtime and workflow IDs
+  - Input and output artifact examples for each step
+  - Final dataset lineage and cost cleanup status
+
+execution_notes:
+  - All workflows shown in this report are in COMPLETED state.
+  - HF gated model access is required for Cosmos and GR00T model pulls.
+
+dataset_chain:
+  - "PhysAI-InputMimic:1 -> PhysAI-MimicGen:1 -> PhysAI-MP4Videos:1"
+  - "-> PhysAI-CosmosAugmentedMP4:11 -> PhysAI-CosmosAugmentedHDF5:6"
+  - "-> PhysAI-LeRobotDataset:3 -> PhysAI-GR00T-Finetuned:4"
+
+instances:
+  - Control-plane / baseline nodegroup: osmo-nodes using the tfvars default node type (`t3.xlarge` in the example tfvars).
+  - Steps 1-5 GPU nodegroup: osmo-gpu using `g5.12xlarge` or `g5.16xlarge` from Terraform.
+  - Step 6 GR00T nodegroup: osmo-groot using `p4d.24xlarge` from Terraform.
+  - Cleanup target after run: osmo-gpu desired=0, osmo-groot desired=0, osmo-nodes desired=1.
+
+stage_table:
+  - ["1", "mimic-gen-nutpour-2", "25m 58s", "COMPLETED"]
+  - ["2", "hdf5-to-mp4-nutpour-2", "10m 55s", "COMPLETED"]
+  - ["3", "cosmos_transfer_augmentation-23", "14m 49s", "COMPLETED"]
+  - ["4", "mp4_to_hdf5_conversion-6", "1m 57s", "COMPLETED"]
+  - ["5", "dataset_conversion_augmented-3", "3m 21s", "COMPLETED"]
+  - ["6", "groot_finetune_nut_pouring-10", "11m 0s", "COMPLETED"]
+
+stages:
+  - number: 1
+    title: MimicGen Data Generation
+    workflow: mimic-gen-nutpour-2
+    duration_seconds: 1558.210012
+    start_time: "2026-02-19T15:41:57"
+    end_time: "2026-02-19T16:07:55"
+    status: COMPLETED
+    input_dataset: PhysAI-InputMimic:1
+    input_artifact: dataset_annotated_gr1_nut_pouring.hdf5 (60.0 MiB)
+    output_dataset: PhysAI-MimicGen:1
+    output_artifact: generated_dataset_gr1_nut_pouring.hdf5 (2.35 GiB)
+    summary_input_note: |
+      Non-visual artifact (HDF5)
+
+      PhysAI-InputMimic:1/
+        dataset_annotated_gr1_nut_pouring.hdf5
+        size: 62,916,978 B (60.0 MiB)
+    summary_output_note: |
+      Non-visual artifact (HDF5)
+
+      PhysAI-MimicGen:1/
+        generated_dataset_gr1_nut_pouring.hdf5
+        size: 2,522,203,750 B (2.35 GiB)
+    details:
+      - Task embodiment: GR1 nut pouring demonstration generation.
+      - Output HDF5 becomes source for video conversion in Step 2.
+      - Run completed without manual retries in this chain.
+    sample_pairs:
+      - input:
+          label: demo_0
+          artifact: dataset_annotated_gr1_nut_pouring.hdf5
+          note: Input teleop HDF5 for demonstration generation.
+        output:
+          label: demo_0
+          artifact: generated_dataset_gr1_nut_pouring.hdf5
+          note: Generated MimicGen HDF5 contains 51 demonstrations.
+      - input:
+          label: demo_1
+          artifact: dataset_annotated_gr1_nut_pouring.hdf5
+        output:
+          label: demo_1
+          artifact: generated_dataset_gr1_nut_pouring.hdf5
+      - input:
+          label: demo_2
+          artifact: dataset_annotated_gr1_nut_pouring.hdf5
+        output:
+          label: demo_2
+          artifact: generated_dataset_gr1_nut_pouring.hdf5
+
+  - number: 2
+    title: HDF5 to MP4 Conversion
+    workflow: hdf5-to-mp4-nutpour-2
+    duration_seconds: 655.071413
+    start_time: "2026-02-19T23:40:02"
+    end_time: "2026-02-19T23:50:58"
+    status: COMPLETED
+    input_dataset: PhysAI-MimicGen:1
+    input_artifact: generated_dataset_gr1_nut_pouring.hdf5
+    output_dataset: PhysAI-MP4Videos:1
+    output_artifact: demo_0_robot_pov_cam.mp4 + depth pair
+    summary_input_note: |
+      Non-visual artifact (HDF5)
+
+      PhysAI-MimicGen:1/
+        generated_dataset_gr1_nut_pouring.hdf5
+        size: 2,522,203,750 B (2.35 GiB)
+    details:
+      - Generated MP4 artifacts for each demo and camera stream.
+      - Output naming uses demo_<id>_robot_pov_cam(.mp4/_depth.mp4).
+      - Produced the direct video input set for Cosmos transfer.
+    sample_pairs:
+      - input:
+          label: demo_0
+          artifact: generated_dataset_gr1_nut_pouring.hdf5
+        output:
+          label: demo_0
+          artifact: demo_0_robot_pov_cam.mp4
+          image: .report_assets/input_demo0_rgb_frame.png
+          video: .report_assets/input_demo0_rgb.mp4
+      - input:
+          label: demo_1
+          artifact: generated_dataset_gr1_nut_pouring.hdf5
+        output:
+          label: demo_1
+          artifact: demo_1_robot_pov_cam.mp4
+      - input:
+          label: demo_2
+          artifact: generated_dataset_gr1_nut_pouring.hdf5
+        output:
+          label: demo_2
+          artifact: demo_2_robot_pov_cam.mp4
+
+  - number: 3
+    title: Cosmos Transfer Augmentation
+    workflow: cosmos_transfer_augmentation-23
+    duration_seconds: 889.088467
+    start_time: "2026-02-22T08:09:40"
+    end_time: "2026-02-22T08:24:29"
+    status: COMPLETED
+    input_dataset: PhysAI-MP4Videos:1
+    input_artifact: demo_0_robot_pov_cam.mp4
+    output_dataset: PhysAI-CosmosAugmentedMP4:11
+    output_artifact: demo_0_robot_pov_cam.mp4
+    details:
+      - Model path: Cosmos transfer workflow with HF gated checkpoints.
+      - Output selection keeps generated MP4 and excludes control artifacts.
+      - Produced the augmented video set consumed by Step 4.
+    sample_pairs:
+      - input:
+          label: demo_0
+          artifact: demo_0_robot_pov_cam.mp4
+          image: .report_assets/input_demo0_rgb_frame.png
+          video: .report_assets/input_demo0_rgb.mp4
+        output:
+          label: demo_0
+          artifact: demo_0_robot_pov_cam.mp4
+          image: .report_assets/output_demo0_rgb_frame_upscaled.png
+          video: .report_assets/output_demo0_rgb.mp4
+      - input:
+          label: demo_1
+          artifact: demo_1_robot_pov_cam.mp4
+        output:
+          label: demo_1
+          artifact: demo_1_robot_pov_cam.mp4
+      - input:
+          label: demo_2
+          artifact: demo_2_robot_pov_cam.mp4
+        output:
+          label: demo_2
+          artifact: demo_2_robot_pov_cam.mp4
+
+  - number: 4
+    title: MP4 to HDF5 Conversion
+    workflow: mp4_to_hdf5_conversion-6
+    duration_seconds: 117.246848
+    start_time: "2026-02-22T08:28:12"
+    end_time: "2026-02-22T08:30:09"
+    status: COMPLETED
+    input_dataset: PhysAI-CosmosAugmentedMP4:11
+    input_artifact: demo_0_robot_pov_cam.mp4
+    output_dataset: PhysAI-CosmosAugmentedHDF5:6
+    output_artifact: cosmos_augmented_dataset.hdf5 (2.40 GiB)
+    summary_output_note: |
+      Non-visual artifact (HDF5)
+
+      PhysAI-CosmosAugmentedHDF5:6/
+        cosmos_augmented_dataset.hdf5
+        size: 2,576,345,050 B (2.40 GiB)
+    details:
+      - Converter maps nut-pouring schema keys (robot_pov_cam + eef states).
+      - Run created augmented demo_50 and total demonstrations = 51.
+      - This HDF5 output feeds the LeRobot conversion step.
+    sample_pairs:
+      - input:
+          label: demo_0
+          artifact: demo_0_robot_pov_cam.mp4
+          image: .report_assets/output_demo0_rgb_frame_upscaled.png
+        output:
+          label: demo_0
+          artifact: cosmos_augmented_dataset.hdf5
+          note: Augmented HDF5 contains the replaced RGB camera frames.
+      - input:
+          label: demo_1
+          artifact: demo_1_robot_pov_cam.mp4
+        output:
+          label: demo_1
+          artifact: cosmos_augmented_dataset.hdf5
+      - input:
+          label: demo_2
+          artifact: demo_2_robot_pov_cam.mp4
+        output:
+          label: demo_2
+          artifact: cosmos_augmented_dataset.hdf5
+
+  - number: 5
+    title: LeRobot Dataset Conversion
+    workflow: dataset_conversion_augmented-3
+    duration_seconds: 201.335118
+    start_time: "2026-02-25T01:34:24"
+    end_time: "2026-02-25T01:37:45"
+    status: COMPLETED
+    input_dataset: PhysAI-CosmosAugmentedHDF5:6
+    input_artifact: cosmos_augmented_dataset.hdf5
+    output_dataset: PhysAI-LeRobotDataset:3
+    output_artifact: nut_pouring_task/lerobot/videos/.../episode_000000.mp4
+    summary_input_note: |
+      Non-visual artifact (HDF5)
+
+      PhysAI-CosmosAugmentedHDF5:6/
+        cosmos_augmented_dataset.hdf5
+        size: 2,576,345,050 B (2.40 GiB)
+    details:
+      - Converted and exported 51/51 episodes to LeRobot format.
+      - Uploaded dataset version 3 with checksum a8d3942cacf7922527be216fb95d1fa8.
+      - LeRobot output is the direct training input for Step 6.
+    sample_pairs:
+      - input:
+          label: episode_000000
+          artifact: cosmos_augmented_dataset.hdf5
+        output:
+          label: episode_000000
+          artifact: nut_pouring_task/lerobot/videos/.../episode_000000.mp4
+          image: .report_assets/lerobot_episode0_frame.png
+          video: .report_assets/lerobot_episode0.mp4
+      - input:
+          label: episode_000001
+          artifact: cosmos_augmented_dataset.hdf5
+        output:
+          label: episode_000001
+          artifact: nut_pouring_task/lerobot/videos/.../episode_000001.mp4
+      - input:
+          label: episode_000002
+          artifact: cosmos_augmented_dataset.hdf5
+        output:
+          label: episode_000002
+          artifact: nut_pouring_task/lerobot/videos/.../episode_000002.mp4
+
+  - number: 6
+    title: GR00T Fine-Tuning
+    workflow: groot_finetune_nut_pouring-10
+    duration_seconds: 659.885931
+    start_time: "2026-02-25T01:40:33"
+    end_time: "2026-02-25T01:51:33"
+    status: COMPLETED
+    input_dataset: PhysAI-LeRobotDataset:3
+    input_artifact: nut_pouring_task/lerobot (51 episodes)
+    output_dataset: PhysAI-GR00T-Finetuned:4
+    output_artifact: checkpoint/model safetensors + trainer artifacts
+    summary_output_note: |
+      Non-visual artifact (model checkpoint set)
+
+      PhysAI-GR00T-Finetuned:4/
+        model-00001-of-00002.safetensors  4.66 GiB
+        model-00002-of-00002.safetensors  2.41 GiB
+        checkpoint-1/optimizer.pt         9.51 GiB
+        config.json, trainer_state.json, training_args.bin
+
+      Total dataset size: 25,381,936,120 B (23.64 GiB)
+    details:
+      - Training run executed with max_steps=1 for reproducibility check.
+      - Observed train_runtime=24.33s and successful artifact packaging/upload.
+      - Uploaded version 4 checksum 0746c8114144510942dd449b0982da59.
+    sample_pairs:
+      - input:
+          label: episode_000000
+          artifact: nut_pouring_task/lerobot/videos/.../episode_000000.mp4
+          image: .report_assets/lerobot_episode0_frame.png
+        output:
+          label: checkpoint-1
+          artifact: checkpoint/model-00001-of-00002.safetensors
+          note: Reproducibility run with max_steps=1.
+      - input:
+          label: trainer_state
+          artifact: trainer_state.json
+        output:
+          label: training_args
+          artifact: training_args.bin
+      - input:
+          label: config
+          artifact: config.json
+        output:
+          label: optimizer
+          artifact: checkpoint-1/optimizer.pt
+
+embedded_videos:
+  - title: Step 2 Output (Input to Step 3)
+    artifact: PhysAI-MP4Videos:1 / demo_0_robot_pov_cam.mp4
+    poster: .report_assets/input_demo0_rgb_frame.png
+    video: .report_assets/input_demo0_rgb.mp4
+    missing_note: Step 2 video not found in .report_assets.
+  - title: Step 3 Output
+    artifact: PhysAI-CosmosAugmentedMP4:11 / demo_0_robot_pov_cam.mp4
+    poster: .report_assets/output_demo0_rgb_frame_upscaled.png
+    video: .report_assets/output_demo0_rgb.mp4
+    missing_note: Step 3 video not found in .report_assets.
+  - title: Step 5 Output
+    artifact: PhysAI-LeRobotDataset:3 / episode_000000.mp4
+    poster: .report_assets/lerobot_episode0_frame.png
+    video: .report_assets/lerobot_episode0.mp4
+    missing_note: Step 5 video not found in .report_assets.
+
+pitfalls:
+  - Missing HF gated approvals for Cosmos/GR00T models.
+  - Incorrect Step 3 output selection (must keep generated robot camera MP4).
+  - Step 4 schema mismatch if converter assumes generic table_cam/eef_pos keys.
+  - Attempting aggressive multi-GPU settings before baseline single-GPU verification.
+  - Leaving GPU nodegroups up after run if idle autoscaler is not enabled.
+
+cost_control:
+  - Idle scale-down is automated for this environment.
+  - "Automation script: deployments/scripts/aws/auto-scale-idle.sh"
+  - "Cron: */5 * * * * .../auto-scale-idle.sh --once --cluster osmo --region us-west-2 --osmo-namespace osmo-minimal --idle-minutes 20 --cpu-desired 1"
+  - One-shot cleanup executed after workflow completion: osmo-groot desired=0, osmo-gpu desired=0, osmo-nodes desired=1.
+  - Final node state: only CPU baseline node remains in cluster.
+
+summary_points:
+  - "1) All six workflows are completed with verified artifact outputs."
+  - "2) Dataset lineage ends at PhysAI-GR00T-Finetuned:4."
+  - "3) Per-step runtime and I/O examples are captured in this report."
+  - "4) GPU resources are cleaned automatically via idle scale-down automation."

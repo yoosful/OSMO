@@ -12,6 +12,7 @@ INPUT_HDF5="${INPUT_HDF5:-}"
 INPUT_DATASET_NAME="${INPUT_DATASET_NAME:-PhysAI-InputMimic}"
 SKIP_UPLOAD=false
 MAX_STEPS="${MAX_STEPS:-1}"
+RUN_METADATA_PATH="${RUN_METADATA_PATH:-}"
 
 log_info()    { echo -e "\033[0;34m[INFO]\033[0m  $*"; }
 log_success() { echo -e "\033[0;32m[OK]\033[0m    $*"; }
@@ -27,6 +28,7 @@ Options:
   --input-dataset NAME Input dataset name for Step 1 (default: PhysAI-InputMimic)
   --skip-upload        Assume the input dataset already exists in OSMO
   --max-steps N        Step 6 GR00T max_steps override (default: 1)
+  --run-metadata PATH  Write workflow submission metadata JSON to this path
   -h, --help           Show this help
 EOF
 }
@@ -51,6 +53,7 @@ parse_args() {
             --input-dataset) INPUT_DATASET_NAME="$2"; shift 2 ;;
             --skip-upload) SKIP_UPLOAD=true; shift ;;
             --max-steps) MAX_STEPS="$2"; shift 2 ;;
+            --run-metadata) RUN_METADATA_PATH="$2"; shift 2 ;;
             -h|--help) usage; exit 0 ;;
             *)
                 log_error "Unknown argument: $1"
@@ -59,6 +62,37 @@ parse_args() {
                 ;;
         esac
     done
+}
+
+append_run_metadata() {
+    local step_name="$1"
+    local workflow_file="$2"
+    local workflow_id="$3"
+    if [[ -z "$RUN_METADATA_PATH" ]]; then
+        return
+    fi
+    python3 - "$RUN_METADATA_PATH" "$step_name" "$workflow_file" "$workflow_id" <<'PY'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+path, step_name, workflow_file, workflow_id = sys.argv[1:5]
+payload = []
+if os.path.exists(path):
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+payload.append(
+    {
+        "step_name": step_name,
+        "workflow_file": workflow_file,
+        "workflow_id": workflow_id,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+)
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2)
+PY
 }
 
 upload_input_dataset() {
@@ -83,6 +117,8 @@ upload_input_dataset() {
 
 submit_workflow() {
     local workflow_file="$1"
+    local step_name="$2"
+    shift
     shift
     log_info "Submitting $(basename "$workflow_file")"
     local submit_output
@@ -94,6 +130,7 @@ submit_workflow() {
         printf '%s\n' "$submit_output"
         exit 1
     fi
+    append_run_metadata "$step_name" "$workflow_file" "$workflow_id"
     wait_for_workflow "$workflow_id"
 }
 
@@ -135,12 +172,12 @@ EOF
 
     upload_input_dataset
 
-    submit_workflow "${COOKBOOK_DIR}/01_mimic_generation_v1.yaml"
-    submit_workflow "${COOKBOOK_DIR}/02_hdf5_to_mp4_v1.yaml"
-    submit_workflow "${COOKBOOK_DIR}/03_cosmos_augmentation.yaml"
-    submit_workflow "${COOKBOOK_DIR}/04_mp4_to_hdf5.yaml"
-    submit_workflow "${COOKBOOK_DIR}/05_lerobot_conversion.yaml"
-    submit_workflow "${COOKBOOK_DIR}/06_groot_finetune.yaml" --set "max_steps=${MAX_STEPS}"
+    submit_workflow "${COOKBOOK_DIR}/01_mimic_generation_v1.yaml" "mimic_generation"
+    submit_workflow "${COOKBOOK_DIR}/02_hdf5_to_mp4_v1.yaml" "hdf5_to_mp4"
+    submit_workflow "${COOKBOOK_DIR}/03_cosmos_augmentation.yaml" "cosmos_augmentation"
+    submit_workflow "${COOKBOOK_DIR}/04_mp4_to_hdf5.yaml" "mp4_to_hdf5"
+    submit_workflow "${COOKBOOK_DIR}/05_lerobot_conversion.yaml" "lerobot_conversion"
+    submit_workflow "${COOKBOOK_DIR}/06_groot_finetune.yaml" "groot_finetune" --set "max_steps=${MAX_STEPS}"
 
     log_success "Submitted the full nut-pouring workflow sequence"
 }

@@ -20,6 +20,12 @@ SPDX-License-Identifier: Apache-2.0
 
 This runbook is aligned with `Nut_Pouring_Pipeline_Report.pptx` dated 2026-02-25. It targets the same six-step cookbook flow on AWS/EKS and uses the workflow variants that were tuned for the reported reproduction.
 
+The report tooling in this branch is manifest-driven:
+
+- `generate_nut_pouring_report.py` builds the PPTX from a YAML manifest.
+- `collect_nut_pouring_evidence.py` builds an artifact pack with copied sample assets and side-by-side comparisons.
+- `report_manifest.example.yaml` is the baseline manifest shape.
+
 ## What the report shows
 
 The report captures one successful end-to-end chain:
@@ -36,6 +42,14 @@ Recorded workflow order:
 6. `06_groot_finetune.yaml`
 
 ## Required prerequisites
+
+- Local tools: `aws`, `kubectl`, `helm`, `terraform`, and Python deps for report generation.
+- Bootstrap helper for this branch:
+
+```bash
+./bootstrap_aws_repro_tools.sh
+export PATH="$HOME/.local/bin:$PATH"
+```
 
 - AWS/EKS OSMO cluster with CPU plus GPU capacity
 - NGC API key for `nvcr.io` image pulls
@@ -67,10 +81,23 @@ osmo login http://localhost:8080 --method=dev --username=testuser
 ./osmo-run-nut-pouring.sh \
   --pool default \
   --input-hdf5 ./dataset_annotated_gr1_nut_pouring.hdf5 \
+  --run-metadata ./nut_pouring_run.json \
   --max-steps 1
 ```
 
 `--max-steps 1` matches the report's GR00T reproducibility check. Increase only after the baseline six-step run succeeds.
+
+Generate the artifact pack and PPTX:
+
+```bash
+python3 collect_nut_pouring_evidence.py \
+  --manifest cookbook/nut_pouring/report_manifest.example.yaml \
+  --output-dir ./nut_pouring_artifacts
+
+python3 generate_nut_pouring_report.py \
+  --manifest cookbook/nut_pouring/report_manifest.example.yaml \
+  --output ./Nut_Pouring_Pipeline_Report.pptx
+```
 
 ## Report-specific checks
 
