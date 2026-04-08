@@ -23,6 +23,10 @@ kind: ServiceAccount
 metadata:
   namespace: {{ .Values.global.agentNamespace }}
   name: {{ include "backend-operator.worker.serviceAccountName" . }}
+  {{- if and .Values.services.backendWorker.awsBatch.enabled .Values.services.backendWorker.awsBatch.irsaRoleArn }}
+  annotations:
+    eks.amazonaws.com/role-arn: {{ .Values.services.backendWorker.awsBatch.irsaRoleArn }}
+  {{- end }}
 ---
 # ClusterRole for Backend Worker (Cluster-scoped resources)
 kind: ClusterRole

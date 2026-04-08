@@ -34,7 +34,7 @@ import yaml
 
 from src.lib.utils import common, jinja_sandbox, osmo_errors
 from src.utils import backend_messages, connectors
-from src.utils.job import backend_job_defs, jobs_base, kb_methods
+from src.utils.job import aws_batch, backend_job_defs, jobs_base, kb_methods
 from src.utils.job.jobs_base import JobResult, JobStatus  # pylint: disable=unused-import
 from src.utils.progress_check import progress
 
@@ -65,6 +65,10 @@ class BackendJobExecutionContext:
     @abc.abstractmethod
     def send_message(self, message: backend_messages.MessageBody):
         pass
+
+    def get_batch_client(self) -> Any:
+        """Returns a boto3 Batch client, or None if AWS Batch is not configured."""
+        return None
 
 
 class BackendJob(jobs_base.Job):
@@ -111,6 +115,42 @@ class BackendCreateGroup(backend_job_defs.BackendCreateGroupMixin, BackendWorkfl
     def _get_allowed_job_type(cls):
         return ['CreateGroup']
 
+    def _is_aws_batch_pod(self, resource: Dict) -> bool:
+        """Check if a resource is a Pod annotated for AWS Batch submission."""
+        if resource.get('kind') != 'Pod':
+            return False
+        annotations = resource.get('metadata', {}).get('annotations', {})
+        return annotations.get('osmo.scheduler/type') == 'aws_batch'
+
+    def _create_via_aws_batch(self, resource: Dict, batch_client: Any,
+                              batch_config: connectors.AwsBatchConfig,
+                              namespace: str) -> JobResult:
+        """Submit a pod resource via AWS Batch instead of K8s dynamic client."""
+        pod_name = resource.get('metadata', {}).get('name', 'unknown')
+
+        logging.info('Submitting pod %s via AWS Batch to queue %s',
+                     pod_name, batch_config.job_queue_arn,
+                     extra={'workflow_uuid': self.workflow_uuid})
+
+        job_definition_arn = None
+        try:
+            job_definition = aws_batch.translate_pod_to_batch_job_definition(
+                resource, batch_config, namespace)
+            job_definition_arn = aws_batch.register_job_definition(
+                batch_client, job_definition)
+
+            submit_params = aws_batch.build_submit_job_params(
+                job_definition_arn, resource, batch_config)
+            aws_batch.submit_batch_job(batch_client, submit_params)
+        except Exception as exception:
+            if job_definition_arn is not None:
+                aws_batch.deregister_job_definition(batch_client, job_definition_arn)
+            error_message = f'Failed to submit pod {pod_name} via AWS Batch: {exception}'
+            logging.error(error_message, extra={'workflow_uuid': self.workflow_uuid},
+                          exc_info=True)
+            return JobResult(status=JobStatus.FAILED, message=error_message)
+
+        return JobResult()
 
     def execute(self, context: BackendJobExecutionContext,
                 progress_writer: progress.ProgressWriter,
@@ -129,8 +169,37 @@ class BackendCreateGroup(backend_job_defs.BackendCreateGroupMixin, BackendWorkfl
 
         result = JobResult()
 
+        # Pre-resolve AWS Batch resources once if any pods use Batch scheduling
+        batch_client = None
+        batch_config = None
+        has_batch_pods = any(self._is_aws_batch_pod(r) for r in self.k8s_resources)
+        if has_batch_pods:
+            batch_client = context.get_batch_client()
+            if batch_client is None:
+                error_message = ('AWS Batch client not available but pods are '
+                                 'annotated for aws_batch')
+                logging.error(error_message, extra={'workflow_uuid': self.workflow_uuid})
+                return JobResult(status=JobStatus.FAILED, message=error_message)
+            raw_config = self.scheduler_settings.get('aws_batch_config')
+            if raw_config is None:
+                error_message = 'aws_batch_config missing from scheduler_settings'
+                logging.error(error_message, extra={'workflow_uuid': self.workflow_uuid})
+                return JobResult(status=JobStatus.FAILED, message=error_message)
+            batch_config = connectors.AwsBatchConfig(**raw_config)
+
         for resource in self.k8s_resources:
             resource['metadata']['namespace'] = namespace
+
+            if self._is_aws_batch_pod(resource):
+                batch_result = self._create_via_aws_batch(
+                    resource, batch_client, batch_config, namespace)
+                if batch_result.status != JobStatus.SUCCESS:
+                    return batch_result
+                last_timestamp = jobs_base.update_progress_writer(progress_writer,
+                                                                  last_timestamp,
+                                                                  progress_iter_freq)
+                continue
+
             message = f'Creating {resource["kind"]} named {resource["metadata"]["name"]} '\
                       f'in namespace {resource["metadata"]["namespace"]}'
             logging.info(message, extra={'workflow_uuid': self.workflow_uuid})

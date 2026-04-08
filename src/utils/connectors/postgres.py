@@ -2446,6 +2446,15 @@ class BackendResource(pydantic.BaseModel):
 class BackendSchedulerType(enum.Enum):
     """ Defines the type of scheduler used by the backend """
     KAI = 'kai'
+    AWS_BATCH = 'aws_batch'
+
+
+class AwsBatchConfig(pydantic.BaseModel):
+    """Configuration for AWS Batch on EKS scheduler"""
+    region: str
+    job_queue_arn: str
+    compute_environment_name: str
+    execution_role_arn: str
 
 
 class BackendSchedulerSettings(pydantic.BaseModel):
@@ -2453,6 +2462,7 @@ class BackendSchedulerSettings(pydantic.BaseModel):
     scheduler_type: BackendSchedulerType = BackendSchedulerType.KAI
     scheduler_name: str = 'kai-scheduler'
     scheduler_timeout: int = 30
+    aws_batch_config: AwsBatchConfig | None = None
 
 
 class BackendNodeConditions(pydantic.BaseModel):

@@ -603,11 +603,70 @@ class KaiK8sObjectFactory(K8sObjectFactory):
         return True
 
 
+class AwsBatchK8sObjectFactory(K8sObjectFactory):
+    """K8s object factory for AWS Batch on EKS scheduler.
+
+    AWS Batch on EKS creates standard K8s pods, so the backend listener can monitor
+    them as usual. Pods are annotated so the backend worker routes them through the
+    AWS Batch API instead of the K8s dynamic client.
+    """
+
+    def __init__(self, backend: connectors.Backend):
+        super().__init__('default-scheduler')
+        self._namespace = backend.k8s_namespace
+
+    def create_group_k8s_resources(
+            self, group_uuid: str, pods: List[Dict],
+            labels: Dict[str, str], pool_name: str,
+            priority: wf_priority.WorkflowPriority,
+            topology_keys: List[topology.TopologyKey],
+            task_infos: List[topology.TaskTopology]
+    ) -> List[Dict[str, Any]]:
+        for pod in pods:
+            self.update_pod_k8s_resource(pod, group_uuid, pool_name, priority)
+        return pods
+
+    def update_pod_k8s_resource(self, pod: Dict, group_uuid: str, pool_name: str,
+                                priority: wf_priority.WorkflowPriority):
+        if 'annotations' not in pod['metadata']:
+            pod['metadata']['annotations'] = {}
+        pod['metadata']['annotations']['osmo.scheduler/type'] = 'aws_batch'
+        pod['metadata']['annotations']['osmo.scheduler/group'] = group_uuid
+        pod['metadata']['labels']['osmo.priority'] = priority.value.lower()
+
+    def get_group_cleanup_specs(self, labels: Dict[str, str]) -> \
+        List[backend_job_defs.BackendCleanupSpec]:
+        return [
+            backend_job_defs.BackendCleanupSpec(
+                generic_api=backend_job_defs.BackendGenericApi(api_version='v1', kind='Pod'),
+                labels=labels)]
+
+    def get_scheduler_resources_spec(
+            self, backend: connectors.Backend,
+            pools: List[connectors.Pool]) -> List[Dict]:
+        return []
+
+    def list_scheduler_resources_spec(self, backend: connectors.Backend) \
+        -> List[backend_job_defs.BackendCleanupSpec]:
+        return []
+
+    def list_immutable_scheduler_resources(self) -> List[str]:
+        return []
+
+    def priority_supported(self) -> bool:
+        return True
+
+    def topology_supported(self) -> bool:
+        return False
+
+
 def get_k8s_object_factory(backend: connectors.Backend) -> K8sObjectFactory:
     scheduler_settings = backend.scheduler_settings
     scheduler_type = scheduler_settings.scheduler_type
     if scheduler_type == connectors.BackendSchedulerType.KAI:
         return KaiK8sObjectFactory(backend)
+    elif scheduler_type == connectors.BackendSchedulerType.AWS_BATCH:
+        return AwsBatchK8sObjectFactory(backend)
     else:
         raise osmo_errors.OSMOServerError(f'Unsupported scheduler type: {scheduler_type}')
 

@@ -200,3 +200,24 @@ output "alb_security_group_id" {
   description = "The ID of the security group for ALB"
   value       = module.alb.security_group_id
 }
+
+# AWS Batch Outputs (only when enabled)
+output "aws_batch_job_queue_arn" {
+  description = "The ARN of the AWS Batch job queue"
+  value       = var.enable_aws_batch ? aws_batch_job_queue.osmo[0].arn : null
+}
+
+output "aws_batch_compute_environment_arn" {
+  description = "The ARN of the AWS Batch compute environment"
+  value       = var.enable_aws_batch ? aws_batch_compute_environment.osmo[0].arn : null
+}
+
+output "aws_batch_execution_role_arn" {
+  description = "The ARN of the AWS Batch execution role"
+  value       = var.enable_aws_batch ? aws_iam_role.batch_execution[0].arn : null
+}
+
+output "aws_batch_worker_irsa_role_arn" {
+  description = "The ARN of the IRSA role for the OSMO backend worker"
+  value       = var.enable_aws_batch ? aws_iam_role.batch_worker_irsa[0].arn : null
+}

@@ -39,6 +39,18 @@ filegroup(
 )
 
 osmo_py_library(
+    name = "aws_batch",
+    srcs = [
+        "aws_batch.py",
+    ],
+    deps = [
+        requirement("pydantic"),
+        "//src/utils/connectors",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+osmo_py_library(
     name = "backend_job",
     srcs = [
         "jobs_base.py",
@@ -55,6 +67,7 @@ osmo_py_library(
         "//src/lib/utils:osmo_errors",
         "//src/utils:backend_messages",
         "//src/utils/connectors",
+        "//src/utils/job:aws_batch",
         "//src/utils/progress_check:progress_check_lib",
     ],
     data = [

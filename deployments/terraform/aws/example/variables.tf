@@ -271,3 +271,22 @@ variable "alb_ip_address_type" {
     error_message = "Valid values for alb_ip_address_type are ipv4 and dualstack."
   }
 }
+
+# AWS Batch Variables
+variable "enable_aws_batch" {
+  description = "Enable AWS Batch on EKS as a scheduler for OSMO workflows"
+  type        = bool
+  default     = false
+}
+
+variable "aws_batch_namespace" {
+  description = "Kubernetes namespace for AWS Batch compute environment"
+  type        = string
+  default     = "osmo"
+}
+
+variable "aws_batch_worker_service_account" {
+  description = "Kubernetes service account name for the OSMO backend worker (used for IRSA)"
+  type        = string
+  default     = "osmo-backend-worker"
+}

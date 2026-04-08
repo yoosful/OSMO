@@ -93,6 +93,17 @@ py_test(
     ]
 )
 
+py_test(
+    name = "test_aws_batch",
+    srcs = [
+        "test_aws_batch.py"
+    ],
+    deps = [
+        "//src/utils/connectors",
+        "//src/utils/job:aws_batch",
+    ],
+)
+
 osmo_py_test(
     name = "test_task_db",
     srcs = ["test_task_db.py"],

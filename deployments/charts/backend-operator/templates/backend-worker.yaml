@@ -120,6 +120,10 @@ spec:
         - {{$arg | quote}}
         {{- end }}
         env:
+        {{- if and .Values.services.backendWorker.awsBatch.enabled .Values.services.backendWorker.awsBatch.region }}
+        - name: OSMO_AWS_BATCH_REGION
+          value: {{ .Values.services.backendWorker.awsBatch.region | quote }}
+        {{- end }}
         {{- with .Values.services.backendWorker.extraEnvs }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

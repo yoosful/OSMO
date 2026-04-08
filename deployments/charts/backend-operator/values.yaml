@@ -370,6 +370,22 @@ services:
     ##
     serviceAccount: backend-worker
 
+    ## AWS Batch on EKS configuration (optional)
+    ## When enabled, the backend worker can submit pods via AWS Batch API
+    ##
+    awsBatch:
+      ## Enable AWS Batch integration
+      ##
+      enabled: false
+
+      ## AWS region for Batch API calls
+      ##
+      region: ""
+
+      ## IAM role ARN for IRSA (annotated on the service account)
+      ##
+      irsaRoleArn: ""
+
     ## How often to write progress during task processing loops
     ##
     progressIterFrequency: "15s"

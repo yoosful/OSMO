@@ -27,6 +27,7 @@ from typing import Dict, Optional
 from urllib.parse import urlparse
 import zlib
 
+import boto3
 import pydantic
 import websockets
 from kubernetes import client
@@ -52,11 +53,13 @@ class JobContext(backend_jobs.BackendJobExecutionContext):
     """Context from the backend worker process, needed for executing jobs"""
 
     def __init__(self, namespace: str, test_runner_namespace: str| None,
-        test_runner_cronjob_spec_template: str| None, kb_client: client.ApiClient):
+        test_runner_cronjob_spec_template: str| None, kb_client: client.ApiClient,
+        batch_client=None):
         self._kb_client = kb_client
         self._namespace = namespace
         self._test_runner_namespace = test_runner_namespace
         self._test_runner_cronjob_spec_template = test_runner_cronjob_spec_template
+        self._batch_client = batch_client
         self.message_queue: asyncio.Queue[backend_messages.MessageBody] = \
             asyncio.Queue(maxsize=COMMAND_QUEUE_SIZE)
 
@@ -71,6 +74,9 @@ class JobContext(backend_jobs.BackendJobExecutionContext):
 
     def get_test_runner_cronjob_spec_file(self) -> str| None:
         return self._test_runner_cronjob_spec_template
+
+    def get_batch_client(self):
+        return self._batch_client
 
     def send_message(self, message: backend_messages.MessageBody):
         while True:
@@ -232,9 +238,16 @@ async def main():
     else:
         kube_config.load_incluster_config()
     cluster_api = client.ApiClient()
+
+    batch_client = None
+    aws_batch_region = os.environ.get('OSMO_AWS_BATCH_REGION')
+    if aws_batch_region:
+        batch_client = boto3.client('batch', region_name=aws_batch_region)
+        logging.info('Initialized AWS Batch client for region %s', aws_batch_region)
+
     context = JobContext(
         config.namespace, config.test_runner_namespace, config.test_runner_cronjob_spec_file,
-        cluster_api)
+        cluster_api, batch_client=batch_client)
 
     log_handler = WebsocketLogHandler(context.message_queue)
     src.lib.utils.logging.init_logger('worker', config, extra_handlers=[log_handler])
