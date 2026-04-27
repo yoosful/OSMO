@@ -67,7 +67,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.10'
+          python-version: '3.14.2'
 
       - name: Setup Node.js
         uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
@@ -121,7 +121,7 @@ jobs:
           TARGETS=$(cat "$RUNNER_TEMP/targets.txt")
           npx @anthropic-ai/claude-code@2.1.91 --print \
             --model "$ANTHROPIC_MODEL" \
-            --allowedTools "Read,Edit,Write,Bash(bazel test *),Bash(pnpm test *),Glob,Grep" \
+            --allowedTools "Read,Edit,Write,Bash(bazel test *),Bash(pnpm --dir src/ui test *),Bash(pnpm --dir src/ui validate),Bash(pnpm --dir src/ui format),Glob,Grep" \
             --max-turns ${{ inputs.max_turns || '50' }} \
             "$(cat src/scripts/testbot/TESTBOT_PROMPT.md)
 
@@ -132,6 +132,7 @@ jobs:
           ANTHROPIC_BASE_URL: https://inference-api.nvidia.com
           ANTHROPIC_MODEL: ${{ inputs.model || 'aws/anthropic/claude-opus-4-5' }}
           DISABLE_PROMPT_CACHING: "1"  # NVIDIA gateway rejects cache_control.ephemeral.scope
+          CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"  # NVIDIA gateway rejects context_management
 
       - name: Create PR
         if: inputs.dry_run != true

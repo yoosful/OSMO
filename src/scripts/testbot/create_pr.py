@@ -14,6 +14,7 @@ Usage:
 import argparse
 import datetime
 import logging
+import re
 import subprocess
 import sys
 
@@ -61,6 +62,28 @@ def has_open_testbot_pr() -> bool:
         return True
 
 
+_SUSPECTED_BUG_RE = re.compile(r"(?:#|//)\s*SUSPECTED BUG:\s*(.+)")
+
+
+def _scan_suspected_bugs(files: list[str]) -> list[str]:
+    """Scan test files for SUSPECTED BUG markers left by Claude."""
+    seen: set[str] = set()
+    bugs: list[str] = []
+    for filepath in files:
+        try:
+            with open(filepath, encoding="utf-8") as fh:
+                for line in fh:
+                    match = _SUSPECTED_BUG_RE.search(line)
+                    if match:
+                        description = match.group(1).strip()
+                        if description not in seen:
+                            seen.add(description)
+                            bugs.append(description)
+        except OSError:
+            logger.warning("Could not read %s for bug markers", filepath)
+    return bugs
+
+
 def main() -> None:
     """Detect changes, create branch, commit, push, and open PR."""
     parser = argparse.ArgumentParser(
@@ -84,10 +107,16 @@ def main() -> None:
     logger.info("Changed test files: %s", changed_files)
 
     basenames = sorted({f.rsplit("/", maxsplit=1)[-1] for f in changed_files})
-    files_summary = ", ".join(basenames)
+    # Strip test prefixes/suffixes to show source file names in the PR title.
+    # test_foo.py → foo.py, foo_test.go → foo.go, foo.test.ts → foo.ts
+    source_names = sorted({
+        re.sub(r"^test_", "", re.sub(r"[._]test(\.\w+)$", r"\1", name))
+        for name in basenames
+    })
+    files_summary = ", ".join(source_names)
     files_list = "\n".join(f"- `{f}`" for f in changed_files)
 
-    branch = f"testbot/{datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y%m%d-%H%M')}"
+    branch = f"testbot/{datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y%m%d-%H%M")}"
 
     if args.dry_run:
         logger.info("Dry run — would create branch '%s' with files:\n%s", branch, files_list)
@@ -105,6 +134,12 @@ def main() -> None:
         sys.exit(1)
     logger.info("Pushed branch '%s'", branch)
 
+    suspected_bugs = _scan_suspected_bugs(changed_files)
+    bugs_section = ""
+    if suspected_bugs:
+        bugs_list = "\n".join(f"- {bug}" for bug in suspected_bugs)
+        bugs_section = f"\n## Suspected bugs\n{bugs_list}\n"
+
     pr_body = f"""## Summary
 AI-generated tests targeting file(s) with low coverage.
 
@@ -112,7 +147,7 @@ Issue - None
 
 ## Files tested
 {files_list}
-
+{bugs_section}
 ## Checklist
 - [x] I am familiar with the Contributing Guidelines
 - [x] New or existing tests cover these changes

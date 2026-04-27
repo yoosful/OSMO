@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Union, cast
 from unittest import mock
 import unittest
 
-from src.lib.utils import common
+from src.lib.utils import common, credentials
 from src.utils.job import task, kb_objects
 from src.utils import connectors
 
@@ -668,6 +668,267 @@ class BatchUpdateValidationTest(unittest.TestCase):
                 status=task.TaskGroupStatus.INITIALIZING,
                 message='should fail',
             )
+
+
+class CredentialEnvTest(unittest.TestCase):
+    """Tests for credential env var generation in TaskSpec.to_pod_container."""
+
+    def _make_task_spec(self, credentials: Dict[str, Any]) -> task.TaskSpec:
+        return task.TaskSpec(
+            name='test-task',
+            image='ubuntu:latest',
+            command=['echo'],
+            credentials=credentials,
+        )
+
+    def _get_cred_env_vars(self, container: Dict) -> List[Dict]:
+        """Extract credential-sourced env vars (those with secretKeyRef)."""
+        return [
+            env for env in container['env']
+            if 'valueFrom' in env
+            and 'secretKeyRef' in env['valueFrom']
+            and env['valueFrom']['secretKeyRef']['name'] == 'test-secrets'
+        ]
+
+    def _build_container(self, credentials: Dict[str, Any]) -> Dict:
+        task_spec = self._make_task_spec(credentials)
+        return task_spec.to_pod_container(
+            user_args=[],
+            files=[],
+            mounts=[],
+            user_secrets_name='test-secrets',
+            config_dir_secret_name='test-config',
+        )
+
+    def test_single_credential(self):
+        """Single credential produces a namespaced secret key."""
+        container = self._build_container({
+            'my-cred': {'MY_ENV': 'key'},
+        })
+        cred_vars = self._get_cred_env_vars(container)
+        self.assertEqual(len(cred_vars), 1)
+        self.assertEqual(cred_vars[0]['name'], 'MY_ENV')
+        self.assertEqual(
+            cred_vars[0]['valueFrom']['secretKeyRef']['key'], 'my-cred.key')
+
+    def test_multiple_credentials_same_payload_key(self):
+        """Two credentials sharing the same payload key get distinct secret keys."""
+        container = self._build_container({
+            'service-a-auth': {'SERVICE_A_KEY': 'key'},
+            'service-b-auth': {'SERVICE_B_KEY': 'key'},
+        })
+        cred_vars = self._get_cred_env_vars(container)
+        self.assertEqual(len(cred_vars), 2)
+
+        by_name = {v['name']: v for v in cred_vars}
+        self.assertEqual(
+            by_name['SERVICE_A_KEY']['valueFrom']['secretKeyRef']['key'],
+            'service-a-auth.key')
+        self.assertEqual(
+            by_name['SERVICE_B_KEY']['valueFrom']['secretKeyRef']['key'],
+            'service-b-auth.key')
+
+    def test_multiple_payload_keys_per_credential(self):
+        """A credential with multiple payload keys maps each one correctly."""
+        container = self._build_container({
+            'my-cred': {'ENV_A': 'username', 'ENV_B': 'password'},
+        })
+        cred_vars = self._get_cred_env_vars(container)
+        self.assertEqual(len(cred_vars), 2)
+
+        by_name = {v['name']: v for v in cred_vars}
+        self.assertEqual(
+            by_name['ENV_A']['valueFrom']['secretKeyRef']['key'],
+            'my-cred.username')
+        self.assertEqual(
+            by_name['ENV_B']['valueFrom']['secretKeyRef']['key'],
+            'my-cred.password')
+
+    def test_file_mount_credentials_skipped(self):
+        """String-valued credentials (file mounts) produce no secretKeyRef env vars."""
+        container = self._build_container({
+            'my-cred': '/mnt/secrets',
+        })
+        cred_vars = self._get_cred_env_vars(container)
+        self.assertEqual(len(cred_vars), 0)
+
+
+class CredentialSecretBuildTest(unittest.TestCase):
+    """Tests that get_kb_specs builds the K8s Secret with correctly namespaced keys and values."""
+
+    def _make_group_with_credentials(
+        self, credentials: Dict[str, Union[str, Dict[str, str]]]
+    ) -> task.TaskGroup:
+        spec = task.TaskGroupSpec(
+            name='test-group',
+            tasks=[task.TaskSpec(
+                name='lead-task', image='ubuntu:latest',
+                command=['echo'], lead=True, credentials=credentials,
+            )],
+        )
+        database = mock.create_autospec(connectors.PostgresConnector, instance=True)
+        return task.TaskGroup(
+            name='test-group',
+            group_uuid=common.generate_unique_id(),
+            spec=spec,
+            tasks=[],
+            remaining_upstream_groups=set(),
+            downstream_groups=set(),
+            database=database,
+        )
+
+    def _run_get_kb_specs(
+        self, group: task.TaskGroup, cred_payloads: Dict[str, Dict[str, str]]
+    ) -> mock.MagicMock:
+        """Run get_kb_specs with mocked internals, return the captured create_secret calls."""
+        cast(mock.MagicMock, group.database.get_generic_cred).side_effect = (
+            lambda user, name: cred_payloads[name]
+        )
+
+        mock_k8s_factory = mock.MagicMock()
+        mock_k8s_factory.create_secret.side_effect = lambda name, *a, **kw: {
+            'name': name, 'stringData': a[2] if len(a) > 2 else kw.get('string_data', {})
+        }
+        mock_k8s_factory.create_image_secret.return_value = {}
+        mock_k8s_factory.create_group_k8s_resources.return_value = []
+
+        mock_pool = mock.MagicMock()
+        mock_pool.topology_keys = []
+        mock_pool.parsed_group_templates = []
+
+        with mock.patch.object(task.TaskGroup, 'get_k8s_object_factory', return_value=mock_k8s_factory), \
+             mock.patch.object(task.TaskGroup, '_get_registry_creds', return_value=({}, None)), \
+             mock.patch.object(task.TaskGroup, 'convert_all_pod_specs', return_value=([], [], [])), \
+             mock.patch.object(task.TaskGroup, '_build_topology_tree', return_value=([], [])), \
+             mock.patch('src.utils.connectors.Pool.fetch_from_db', return_value=mock_pool):
+            mock_progress = mock.create_autospec(
+                task.progress.ProgressWriter, instance=True)
+            group.get_kb_specs(
+                workflow_uuid=common.generate_unique_id(),
+                user='test-user',
+                workflow_config=mock.MagicMock(),
+                backend_config_cache=mock.MagicMock(),
+                backend_name='test-backend',
+                pool='test-pool',
+                progress_writer=mock_progress,
+                progress_iter_freq=datetime.timedelta(seconds=999),
+                workflow_plugins=mock.MagicMock(),
+                priority=mock.MagicMock(),
+            )
+        return mock_k8s_factory.create_secret
+
+    def test_secret_values_namespaced_single_credential(self):
+        """Secret stores value under namespaced key for a single credential."""
+        group = self._make_group_with_credentials({
+            'my-cred': {'MY_ENV': 'token'},
+        })
+        create_secret = self._run_get_kb_specs(group, {
+            'my-cred': {'token': 'secret-value-123'},
+        })
+        user_secret_call = [
+            c for c in create_secret.call_args_list
+            if 'user-secrets' in c[0][0]
+        ]
+        self.assertEqual(len(user_secret_call), 1)
+        string_data = user_secret_call[0][0][3]
+        self.assertEqual(string_data, {'my-cred.token': 'secret-value-123'})
+
+    def test_secret_values_namespaced_multiple_credentials_same_key(self):
+        """Two credentials with the same payload key produce distinct secret entries."""
+        group = self._make_group_with_credentials({
+            'service-a-auth': {'SERVICE_A_KEY': 'key'},
+            'service-b-auth': {'SERVICE_B_KEY': 'key'},
+        })
+        create_secret = self._run_get_kb_specs(group, {
+            'service-a-auth': {'key': 'value-a'},
+            'service-b-auth': {'key': 'value-b'},
+        })
+        user_secret_call = [
+            c for c in create_secret.call_args_list
+            if 'user-secrets' in c[0][0]
+        ]
+        self.assertEqual(len(user_secret_call), 1)
+        string_data = user_secret_call[0][0][3]
+        self.assertEqual(string_data, {
+            'service-a-auth.key': 'value-a',
+            'service-b-auth.key': 'value-b',
+        })
+
+    def test_file_mount_credential_not_in_secrets(self):
+        """File-mount credentials should not appear in the user-secrets Secret."""
+        group = self._make_group_with_credentials({
+            'my-cred': '/mnt/secrets',
+        })
+        create_secret = self._run_get_kb_specs(group, {
+            'my-cred': {'token': 'secret-value'},
+        })
+        user_secret_call = [
+            c for c in create_secret.call_args_list
+            if 'user-secrets' in c[0][0]
+        ]
+        self.assertEqual(len(user_secret_call), 0)
+
+
+class CreateConfigDictTest(unittest.TestCase):
+    """Tests for create_config_dict with different credential types."""
+
+    def test_static_credential(self):
+        """Test create_config_dict with StaticDataCredential."""
+        static_cred = credentials.StaticDataCredential(
+            endpoint='s3://my-bucket',
+            access_key_id='AKIAIOSFODNN7EXAMPLE',
+            access_key='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+            region='us-east-1',
+        )
+
+        result = task.create_config_dict({'s3://my-bucket': static_cred})
+
+        data_entry = result['auth']['data']['s3://my-bucket']
+        self.assertEqual(data_entry['access_key_id'], 'AKIAIOSFODNN7EXAMPLE')
+        self.assertEqual(data_entry['access_key'], 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')
+        self.assertEqual(data_entry['endpoint'], 's3://my-bucket')
+        self.assertEqual(data_entry['region'], 'us-east-1')
+
+    def test_default_credential(self):
+        """Test create_config_dict with DefaultDataCredential produces no access keys."""
+        default_cred = credentials.DefaultDataCredential(
+            endpoint='s3://ambient-bucket',
+            region='us-west-2',
+        )
+
+        result = task.create_config_dict({'s3://ambient-bucket': default_cred})
+
+        data_entry = result['auth']['data']['s3://ambient-bucket']
+        self.assertEqual(data_entry['endpoint'], 's3://ambient-bucket')
+        self.assertEqual(data_entry['region'], 'us-west-2')
+        self.assertNotIn('access_key_id', data_entry)
+        self.assertNotIn('access_key', data_entry)
+
+    def test_mixed_credentials(self):
+        """Test create_config_dict with both credential types."""
+        static_cred = credentials.StaticDataCredential(
+            endpoint='s3://static-bucket',
+            access_key_id='AKIAIOSFODNN7EXAMPLE',
+            access_key='secret',
+        )
+        default_cred = credentials.DefaultDataCredential(
+            endpoint='s3://ambient-bucket',
+            region='eu-west-1',
+        )
+
+        result = task.create_config_dict({
+            's3://static-bucket': static_cred,
+            's3://ambient-bucket': default_cred,
+        })
+
+        static_entry = result['auth']['data']['s3://static-bucket']
+        self.assertIn('access_key_id', static_entry)
+        self.assertIn('access_key', static_entry)
+
+        ambient_entry = result['auth']['data']['s3://ambient-bucket']
+        self.assertNotIn('access_key_id', ambient_entry)
+        self.assertNotIn('access_key', ambient_entry)
+        self.assertEqual(ambient_entry['region'], 'eu-west-1')
 
 
 if __name__ == '__main__':

@@ -19,6 +19,7 @@ SPDX-License-Identifier: Apache-2.0
 import base64
 import datetime
 import logging
+import os
 from pathlib import Path
 import sys
 from typing import Dict, List
@@ -28,7 +29,7 @@ import fastapi
 import fastapi.middleware.cors
 import fastapi.responses
 import uvicorn  # type: ignore
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor # type: ignore
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # type: ignore
 
 from src.lib.utils import common, login, osmo_errors, version
 import src.lib.utils.logging
@@ -37,7 +38,8 @@ from src.service.agent import helpers as backend_helpers
 from src.service.core.app import app_service
 from src.service.core.auth import auth_service, objects as auth_objects
 from src.service.core.config import (
-    config_service, helpers as config_helpers, objects as config_objects
+    config_service, configmap_events, configmap_loader,
+    helpers as config_helpers, objects as config_objects,
 )
 from src.service.core.data import data_service, query
 from src.service.core.profile import profile_service
@@ -50,7 +52,7 @@ from src.utils.job import task as task_lib
 
 
 app = fastapi.FastAPI(docs_url='/api/docs', redoc_url=None, openapi_url='/api/openapi.json')
-misc_router = fastapi.APIRouter(tags = ['Misc API'])
+misc_router = fastapi.APIRouter(tags=['Misc API'])
 curr_cli_config = connectors.CliConfig()
 
 
@@ -71,7 +73,7 @@ async def check_client_version(request: fastapi.Request, call_next):
         if cli_info.latest_version else version.VERSION
     if cli_info.client_install_url:
         install_command = f'Please run the following command:\n' \
-                          f'curl -fsSL {cli_info.client_install_url} | bash'
+            f'curl -fsSL {cli_info.client_install_url} | bash'
     else:
         install_command = \
             'Please update by running the install command in the documentation.'
@@ -81,10 +83,10 @@ async def check_client_version(request: fastapi.Request, call_next):
                 client_version < version.Version.from_string(cli_info.min_supported_version):
             return fastapi.responses.JSONResponse(
                 status_code=400,
-                content={'message': 'Your client is out of date. Client version is ' + \
-                        f'{client_version_str} but the newest client version is '
-                        f'{newest_client_version}.\n{install_command}',
-                        'error_code': osmo_errors.OSMOError.error_code},
+                content={'message': 'Your client is out of date. Client version is ' +
+                         f'{client_version_str} but the newest client version is '
+                         f'{newest_client_version}.\n{install_command}',
+                         'error_code': osmo_errors.OSMOError.error_code},
             )
         suggest_version_update = True
 
@@ -207,6 +209,7 @@ def get_workflow_plugins_configs() -> connectors.PluginsConfig:
 
 app.include_router(misc_router)
 
+
 @app.exception_handler(osmo_errors.OSMOUsageError)
 @app.exception_handler(osmo_errors.OSMOResourceError)
 @app.exception_handler(osmo_errors.OSMOCredentialError)
@@ -291,22 +294,22 @@ def set_default_backend_images(postgres: connectors.PostgresConnector):
 
     # If backend_images are already set, do not override them
     if curr_workflow_configs.backend_images.init and \
-        curr_workflow_configs.backend_images.client:
+            curr_workflow_configs.backend_images.client:
         return
 
     if postgres.config.osmo_image_location and \
-        postgres.config.osmo_image_tag:
+            postgres.config.osmo_image_tag:
         # Override default backend_images with deployment values
         backend_images = connectors.OsmoImageConfig(
             init=f'{postgres.config.osmo_image_location}/'
-                    f'init-container:{postgres.config.osmo_image_tag}',
+            f'init-container:{postgres.config.osmo_image_tag}',
             client=f'{postgres.config.osmo_image_location}/'
-                    f'client:{postgres.config.osmo_image_tag}',
+            f'client:{postgres.config.osmo_image_tag}',
         )
         config_service.patch_workflow_configs(
             request=config_objects.PatchConfigRequest(
                 configs_dict={
-                    'backend_images': backend_images.dict()
+                    'backend_images': backend_images.model_dump()
                 }
             ),
             username='System',
@@ -344,7 +347,7 @@ def set_client_install_url(postgres: connectors.PostgresConnector,
                            config: objects.WorkflowServiceConfig):
     curr_service_configs = postgres.get_service_configs()
     if curr_service_configs.cli_config.client_install_url != config.client_install_url:
-        updated_cli_config = curr_service_configs.cli_config.dict()
+        updated_cli_config = curr_service_configs.cli_config.model_dump()
         updated_cli_config['client_install_url'] = config.client_install_url
         config_service.patch_service_configs(
             request=config_objects.PatchConfigRequest(
@@ -454,7 +457,7 @@ def configure_app(target_app: fastapi.FastAPI, config: objects.WorkflowServiceCo
     )
     if login_info != service_configs_dict.service_auth.login_info:
         configs_dict['service_auth'] = {
-            'login_info': login_info.dict()
+            'login_info': login_info.model_dump()
         }
 
     if configs_dict:
@@ -472,6 +475,24 @@ def configure_app(target_app: fastapi.FastAPI, config: objects.WorkflowServiceCo
     set_default_service_url(postgres)
     set_client_install_url(postgres, config)
     setup_default_admin(postgres, config)
+
+    if config.config_file:
+        event_recorder: configmap_events.EventRecorder | None = None
+        pod_namespace = os.environ.get('POD_NAMESPACE')
+        configmap_name = os.environ.get('OSMO_CONFIGMAP_NAME')
+        if pod_namespace and configmap_name:
+            event_recorder = configmap_events.ConfigMapEventRecorder(
+                namespace=pod_namespace, configmap_name=configmap_name)
+        else:
+            logging.warning(
+                'POD_NAMESPACE or OSMO_CONFIGMAP_NAME unset; '
+                'ConfigMap reload events will not be emitted')
+
+        watcher = configmap_loader.ConfigMapWatcher(
+            config.config_file, postgres, event_recorder=event_recorder)
+        watcher.start()
+        # Store on app state to prevent GC from killing the watcher
+        target_app.state.config_watcher = watcher
 
     # Instantiate QueryParser
     query.QueryParser()

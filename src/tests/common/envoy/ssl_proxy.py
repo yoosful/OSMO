@@ -123,7 +123,7 @@ class SSLProxy(network.NetworkAwareContainer):
 
         for eligible_backend in eligible_backends:
             ssl_proxy_backends.append(SslProxyBackend(
-                **eligible_backend.dict(),
+                **eligible_backend.model_dump(),
                 assigned_ports=[next(assigned_ports)
                                 for _ in eligible_backend.ports]
             ))
@@ -241,8 +241,8 @@ exec envoy -c /etc/envoy/envoy.yaml
             self._container, self.rendered_config_path, ENVOY_CONFIG_CONTAINER_FILE)
         self._wait_until_ready()
 
-    def stop(self):
-        super().stop()
+    def stop(self, force: bool = True, delete_volume: bool = True) -> None:
+        super().stop(force=force, delete_volume=delete_volume)
         if os.path.exists(self.rendered_config_path):
             os.remove(self.rendered_config_path)
 

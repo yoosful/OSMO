@@ -189,6 +189,7 @@ class BackendCreateGroup(backend_job_defs.BackendCreateGroupMixin, BackendWorkfl
 
         for resource in self.k8s_resources:
             resource['metadata']['namespace'] = namespace
+<<<<<<< HEAD
 
             if self._is_aws_batch_pod(resource):
                 batch_result = self._create_via_aws_batch(
@@ -202,6 +203,10 @@ class BackendCreateGroup(backend_job_defs.BackendCreateGroupMixin, BackendWorkfl
 
             message = f'Creating {resource["kind"]} named {resource["metadata"]["name"]} '\
                       f'in namespace {resource["metadata"]["namespace"]}'
+=======
+            message = f'Creating {resource['kind']} named {resource['metadata']['name']} '\
+                      f'in namespace {resource['metadata']['namespace']}'
+>>>>>>> origin/main
             logging.info(message, extra={'workflow_uuid': self.workflow_uuid})
 
             try:
@@ -213,17 +218,17 @@ class BackendCreateGroup(backend_job_defs.BackendCreateGroupMixin, BackendWorkfl
                 reason = body.get('reason', body.get('message', str(api_exception.body)))
                 if reason == 'AlreadyExists':
                     result.message = reason
-                    message = f'Skipping creation of {resource["kind"]} named '\
-                              f'{resource["metadata"]["name"]} '\
-                              f'in namespace {resource["metadata"]["namespace"]} '\
+                    message = f'Skipping creation of {resource['kind']} named '\
+                              f'{resource['metadata']['name']} '\
+                              f'in namespace {resource['metadata']['namespace']} '\
                               'because it already exists'
                     logging.warning(message, extra={'workflow_uuid': self.workflow_uuid})
                 else:
                     raise
             # Handle connection errors and retry
             except urllib3.exceptions.ProtocolError as error:
-                error_message = f'Connection error when creating {resource["kind"]} named '\
-                    f'{resource["metadata"]["name"]}: {error}'
+                error_message = f'Connection error when creating {resource['kind']} named '\
+                    f'{resource['metadata']['name']}: {error}'
                 logging.error(error_message, extra={'workflow_uuid': self.workflow_uuid})
                 return JobResult(status=JobStatus.FAILED_RETRY, message=error_message)
             finally:
@@ -261,7 +266,7 @@ class BackendCleanupGroup(backend_job_defs.BackendCleanupGroupMixin, BackendWork
         for pod in failed_pods:
             for container in pod.spec.init_containers + pod.spec.containers:
                 # Note which pod it is
-                name = f'{pod.metadata.labels.get("osmo.task_name", "")}: {container.name}'
+                name = f'{pod.metadata.labels.get('osmo.task_name', '')}: {container.name}'
                 task_uuid = pod.metadata.labels.get('osmo.task_uuid', None)
                 retry_id = pod.metadata.labels.get('osmo.retry_id', 0)
                 yield f'Logs for container {name} ...\n', task_uuid, retry_id, False
@@ -329,8 +334,8 @@ class BackendCleanupGroup(backend_job_defs.BackendCleanupGroupMixin, BackendWork
                              if resources else []
             error_message = f'Error: {error}. ' if error else ''
             return f'CleanupJob {self.job_id} for group {self.group_name} '\
-                    f'listed pods [{",".join(resources_list)}] '\
-                    f'{"before" if before else "after"} deletion. '\
+                    f'listed pods [{','.join(resources_list)}] '\
+                    f'{'before' if before else 'after'} deletion. '\
                     f'{error_message}'
 
         for cleanup in cleanup_specs_list:
@@ -485,7 +490,7 @@ class LabelNode(BackendWorkflowJob):
 
     @classmethod
     def _get_job_id(cls, values):
-        return f'{values["node_name"]}-{common.generate_unique_id(5)}-labelnode'
+        return f'{values['node_name']}-{common.generate_unique_id(5)}-labelnode'
 
     def execute(self, context: BackendJobExecutionContext,
                 progress_writer: progress.ProgressWriter,
@@ -523,9 +528,9 @@ class BackendSynchronizeQueues(backend_job_defs.BackendSynchronizeQueuesMixin, B
 
     @classmethod
     def _get_job_id(cls, values):
-        return f'{values["backend"]}-modify-queues-{common.generate_unique_id()}'
+        return f'{values['backend']}-modify-queues-{common.generate_unique_id()}'
 
-    @pydantic.validator('job_id', check_fields=False)
+    @pydantic.field_validator('job_id')
     @classmethod
     def validate_job_id(cls, value: str) -> str:
         """
@@ -657,9 +662,9 @@ class BackendSynchronizeBackendTest(backend_job_defs.BackendSynchronizeBackendTe
 
     @classmethod
     def _get_job_id(cls, values):
-        return f'{values["backend"]}-sync-tests-{common.generate_unique_id()}'
+        return f'{values['backend']}-sync-tests-{common.generate_unique_id()}'
 
-    @pydantic.validator('job_id', check_fields=False)
+    @pydantic.field_validator('job_id')
     @classmethod
     def validate_job_id(cls, value: str) -> str:
         """
