@@ -74,3 +74,28 @@ Bucket
      - String/null
      - Default credential identifier to use for this bucket. If null, someone using the bucket will need to specify a credential.
      - ``None``
+   * - ``fsx_lustre``
+     - `FSx Lustre`_/null
+     - Existing FSx for Lustre mount configuration for read-only S3-backed dataset inputs.
+     - ``None``
+
+FSx Lustre
+==========
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 12 43 20
+
+   * - **Field**
+     - **Type**
+     - **Description**
+     - **Default Values**
+   * - ``mount_path``
+     - String
+     - Absolute path mounted into both ``osmo-ctrl`` and the user container. This path must correspond to the bucket's ``dataset_path`` prefix in the externally managed FSx for Lustre file system.
+     - Required field
+
+``fsx_lustre`` is only valid for buckets whose ``dataset_path`` starts with ``s3://``.
+OSMO uses the S3 dataset manifest as the source of truth, then maps each manifest
+``storage_path`` under ``dataset_path`` to the configured FSx for Lustre
+``mount_path`` when a task resolves to ``downloadType: fsx-lustre``.

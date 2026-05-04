@@ -64,9 +64,14 @@ This section provides additional advanced configurations to customize and optimi
 
           File synchronization configuration for seamless data transfer in workflows.
 
+      .. grid-item-card:: :octicon:`server` FSx Lustre Dataset Inputs
+          :link: ./fsx_lustre_dataset_inputs
+          :link-type: doc
+
+          Read S3-backed dataset inputs through an externally managed FSx for Lustre mount.
+
       .. grid-item-card:: :octicon:`shield-lock` Pool-Wide Workload Identity
           :link: ./workflow_pod_workload_identity
           :link-type: doc
 
           Grant shared cloud bucket access to every workflow in a pool, so team members don't supply credentials per workflow.
-

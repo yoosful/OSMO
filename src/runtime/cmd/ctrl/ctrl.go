@@ -1077,10 +1077,10 @@ func copyFile(src string, dest string) {
 func downloadInputs(c net.Conn, inputs common.ArrayFlags, inputPath string,
 	downloadType string, osmoChan chan string, metricChan chan metrics.Metric, retryId string,
 	groupName string, taskName string, userConfig string, serviceConfig string, configLoc string,
-	cacheSize int) {
+	cacheSize int, fsxLustreConfig data.FSxLustreConfig) {
 
 	inputType := "Mounting"
-	if downloadType == data.Download {
+	if downloadType == data.Download || downloadType == data.FSxLustre {
 		inputType = "Downloading"
 	} else {
 		// This is required for FUSE to properly work. Some machines already have /etc/mtab configured
@@ -1125,7 +1125,7 @@ func downloadInputs(c net.Conn, inputs common.ArrayFlags, inputPath string,
 
 		inputInfo.CreateMount(c, inputPath, configFile, osmoChan,
 			metricChan, retryId, groupName, taskName, downloadType, inputIndex,
-			cacheSize/numInputs)
+			cacheSize/numInputs, fsxLustreConfig)
 	}
 	log.Println("All Inputs Gathered")
 	osmoChan <- "All Inputs Gathered"
@@ -1201,7 +1201,7 @@ func uploadOutputs(c net.Conn, outputs common.ArrayFlags,
 }
 
 func cleanupMounts(downloadType string) {
-	if downloadType == "download" {
+	if downloadType == data.Download || downloadType == data.FSxLustre {
 		return
 	}
 
@@ -1415,12 +1415,21 @@ func main() {
 		panic(fmt.Sprintf("Data unauthorized: %v", err))
 	}
 
+	fsxLustreConfig, err := data.LoadFSxLustreConfig(cmdArgs.FSxLustreConfig)
+	if err != nil {
+		osmo_errors.SetExitCode(osmo_errors.INVALID_INPUT_CODE)
+		stopPutLogs <- true
+		stopSendLogs <- true
+		waitGoRoutines.Wait()
+		panic(fmt.Sprintf("Failed to load FSx Lustre config: %v", err))
+	}
+
 	// Send files to be downloaded
 	inputStartTime := time.Now().Format("2006-01-02 15:04:05.000")
 	downloadInputs(unixConn, cmdArgs.Inputs, cmdArgs.InputPath,
 		cmdArgs.DownloadType, downloadChan, metricChan, cmdArgs.RetryId, cmdArgs.GroupName,
 		cmdArgs.LogSource, cmdArgs.UserConfig, cmdArgs.ServiceConfig, cmdArgs.ConfigLoc,
-		cmdArgs.CacheSize)
+		cmdArgs.CacheSize, fsxLustreConfig)
 	inputEndTime := time.Now().Format("2006-01-02 15:04:05.000")
 	downloadTimes := metrics.GroupMetrics{
 		RetryId:    cmdArgs.RetryId,

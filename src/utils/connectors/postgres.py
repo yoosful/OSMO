@@ -87,16 +87,17 @@ class ConfigHistoryType(enum.Enum):
 class DownloadType(str, enum.Enum):
     """ Type of Config to fetch or set """
     DOWNLOAD = 'download'
+    FSX_LUSTRE = 'fsx-lustre'
 
     @staticmethod
     def from_str(label) -> 'DownloadType':
-        if label == 'download':
-            return DownloadType.DOWNLOAD
-        else:
-            raise NotImplementedError
+        try:
+            return DownloadType(label)
+        except ValueError as error:
+            raise NotImplementedError(f'Unsupported download type: {label}') from error
 
     def is_mounting(self) -> bool:
-        return self.value != 'download'
+        return False
 
 
 class PoolType(enum.Enum):
@@ -2746,6 +2747,18 @@ def _resolve_bucket_credential(
     )
 
 
+class FSxLustreConfig(ExtraArgBaseModel):
+    """Configuration for an externally managed FSx for Lustre dataset mirror."""
+    mount_path: str
+
+    @pydantic.field_validator('mount_path')
+    @classmethod
+    def validate_mount_path(cls, mount_path: str) -> str:
+        if not os.path.isabs(mount_path):
+            raise ValueError(f'FSx Lustre mount_path must be absolute: {mount_path}')
+        return mount_path.rstrip('/') or '/'
+
+
 class BucketConfig(ExtraArgBaseModel):
     """
     Class to store the name of the bucket and the dataset path
@@ -2759,6 +2772,14 @@ class BucketConfig(ExtraArgBaseModel):
     # Only applies to workflow operations, NOT user cli since we cannot forward the credential
     # to the user
     default_credential: credentials.StaticDataCredential | None = None
+    fsx_lustre: FSxLustreConfig | None = None
+
+    @pydantic.model_validator(mode='after')
+    def validate_fsx_lustre(self) -> 'BucketConfig':
+        if self.fsx_lustre is not None and not str(self.dataset_path).startswith('s3://'):
+            raise ValueError(
+                'fsx_lustre is only supported for S3-backed dataset buckets.')
+        return self
 
     def valid_access(self, bucket_name: str, access_type: BucketModeAccess):
         if not ((access_type == BucketModeAccess.READ and\

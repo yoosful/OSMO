@@ -50,6 +50,8 @@ func CtrlParse() CtrlArgs {
 	inputPath := flag.String("inputPath", "", "Input Folder.")
 	outputPath := flag.String("outputPath", "", "Output Folder.")
 	metadataFile := flag.String("metadataFile", "", "Default Metadata to apply to Ctrlset.")
+	fsxLustreConfig := flag.String("fsxLustreConfig", "",
+		"JSON config mapping S3 dataset prefixes to existing FSx for Lustre mount paths.")
 	downloadType := flag.String("downloadType", "download",
 		"Whether input does mounting or downloaing and what type of mounting if mounting.")
 	timeout := flag.Int("timeout", 60, "Wait time (m) to connect to the OSMO service.")
@@ -118,6 +120,7 @@ func CtrlParse() CtrlArgs {
 		UserConfig:         *userConfig,
 		ServiceConfig:      *serviceConfig,
 		MetadataFile:       *metadataFile,
+		FSxLustreConfig:    *fsxLustreConfig,
 		DownloadType:       *downloadType,
 		Timeout:            duration,
 		UnixTimeout:        unixDuration,

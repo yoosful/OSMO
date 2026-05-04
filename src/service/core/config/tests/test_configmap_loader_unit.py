@@ -409,6 +409,43 @@ class TestValidateConfigs(unittest.TestCase):
         errors = configmap_loader._validate_configs({})
         self.assertEqual(errors, [])
 
+    def test_dataset_fsx_lustre_config_validates(self):
+        configs: Dict[str, Any] = {
+            'dataset': {
+                'buckets': {
+                    'primary': {
+                        'dataset_path': 's3://test-bucket/datasets',
+                        'fsx_lustre': {
+                            'mount_path': '/mnt/osmo-fsx/datasets',
+                        },
+                    },
+                },
+            },
+        }
+
+        errors = configmap_loader._validate_configs(configs)
+
+        self.assertEqual(errors, [])
+
+    def test_dataset_fsx_lustre_rejects_non_s3_bucket(self):
+        configs: Dict[str, Any] = {
+            'dataset': {
+                'buckets': {
+                    'primary': {
+                        'dataset_path': 'swift://endpoint/AUTH_team/container/datasets',
+                        'fsx_lustre': {
+                            'mount_path': '/mnt/osmo-fsx/datasets',
+                        },
+                    },
+                },
+            },
+        }
+
+        errors = configmap_loader._validate_configs(configs)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn('fsx_lustre', errors[0])
+
 
 class TestValidationErrorFormatting(unittest.TestCase):
     """Pydantic validation errors must never echo input values.

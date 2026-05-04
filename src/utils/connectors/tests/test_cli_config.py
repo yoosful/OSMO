@@ -45,6 +45,36 @@ class TestCliConfig(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(osmo_errors.OSMOUserError):
                 connectors.CliConfig(min_supported_version=bad)
 
+    def test_download_type_accepts_fsx_lustre(self):
+        self.assertEqual(
+            connectors.DownloadType.from_str('fsx-lustre'),
+            connectors.DownloadType.FSX_LUSTRE)
+        self.assertFalse(connectors.DownloadType.FSX_LUSTRE.is_mounting())
+
+    def test_bucket_config_accepts_s3_fsx_lustre_mount(self):
+        bucket = connectors.BucketConfig(
+            dataset_path='s3://test-bucket/datasets',
+            fsx_lustre={'mount_path': '/mnt/osmo-fsx/datasets'},
+        )
+
+        self.assertIsNotNone(bucket.fsx_lustre)
+        assert bucket.fsx_lustre is not None
+        self.assertEqual(bucket.fsx_lustre.mount_path, '/mnt/osmo-fsx/datasets')
+
+    def test_bucket_config_rejects_relative_fsx_lustre_mount(self):
+        with self.assertRaises(ValueError):
+            connectors.BucketConfig(
+                dataset_path='s3://test-bucket/datasets',
+                fsx_lustre={'mount_path': 'relative/path'},
+            )
+
+    def test_bucket_config_rejects_non_s3_fsx_lustre(self):
+        with self.assertRaises(ValueError):
+            connectors.BucketConfig(
+                dataset_path='swift://endpoint/AUTH_team/container/datasets',
+                fsx_lustre={'mount_path': '/mnt/osmo-fsx/datasets'},
+            )
+
 
 if __name__ == '__main__':
     unittest.main()

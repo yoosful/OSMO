@@ -64,6 +64,7 @@ type CtrlArgs struct {
 	UserConfig         string
 	ServiceConfig      string
 	MetadataFile       string
+	FSxLustreConfig    string
 	DownloadType       string
 	Timeout            time.Duration
 	UnixTimeout        time.Duration

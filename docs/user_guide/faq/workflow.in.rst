@@ -194,7 +194,11 @@ Refer to :ref:`workflow list <cli_reference_workflow_list>` to list workflows.
 How to mount datasets inside the workflow?
 ------------------------------------------
 
-Mounting inputs inside a workflow is not supported. Contact your admin to setup NAS or LFS support.
+Direct per-workflow input mounting is not supported. Admins can expose S3-backed OSMO
+dataset inputs through an existing FSx for Lustre mount by configuring
+``downloadType: fsx-lustre``, dataset bucket ``fsx_lustre.mount_path``, and pod
+template volume mounts for ``osmo-ctrl`` and the user container. Dataset outputs
+and dataset updates still use the normal OSMO upload paths.
 
 How to update datasets inside the workflow?
 -------------------------------------------
