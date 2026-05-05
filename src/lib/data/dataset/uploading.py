@@ -27,7 +27,7 @@ from typing_extensions import override, assert_never
 
 import diskcache
 
-from . import common
+from . import common, fsx_lustre
 from .. import storage
 from ..storage import common as storage_common, uploading
 from ..storage.core import client, executor, progress, provider
@@ -62,6 +62,8 @@ class DatasetUploadWorkerInput(executor.ThreadWorkerInput):
     index: int
     entry: UploadEntry
     manifest_cache: diskcache.Index
+    fsx_lustre_config: fsx_lustre.FSxLustreConfig | None = None
+    fsx_lustre_storage_path_cache: diskcache.Index | None = None
 
     size: int = dataclasses.field(init=False)
 
@@ -71,6 +73,41 @@ class DatasetUploadWorkerInput(executor.ThreadWorkerInput):
     @override
     def error_key(self) -> str:
         return self.entry.relative_path
+
+
+def fsx_lustre_executor_params(
+    executor_params: executor.ExecutorParameters,
+    active_fsx_lustre_config: fsx_lustre.FSxLustreConfig | None,
+) -> executor.ExecutorParameters:
+    """
+    Keep FSx Lustre writes in-process.
+
+    The CLI can run from a PyInstaller bundle inside osmo-ctrl. Keeping FSx writes in the
+    main process avoids subprocess state sharing issues while preserving threaded file copies.
+    """
+    if active_fsx_lustre_config is None or executor_params.resolved_num_processes == 1:
+        return executor_params
+
+    return executor.ExecutorParameters(
+        num_processes=1,
+        num_threads=executor_params.resolved_num_threads,
+    )
+
+
+def raise_fsx_lustre_worker_errors(
+    job_context: executor.JobContext,
+    active_fsx_lustre_config: fsx_lustre.FSxLustreConfig | None,
+) -> None:
+    """
+    FSx Lustre writes are fail-fast; do not hide worker failures behind manifest errors.
+    """
+    if active_fsx_lustre_config is None or not job_context.errors:
+        return
+
+    failures = '; '.join(str(error) for error in job_context.errors[:3])
+    raise osmo_errors.OSMODatasetError(
+        f'Error writing dataset through FSx Lustre: {failures}',
+    )
 
 
 class UploadListFileError(osmo_errors.OSMODatasetError):
@@ -196,6 +233,8 @@ def _dataset_upload_worker_input_generator(
     destination_region: str,
     manifest_cache: diskcache.Index,
     regex: str | None,
+    fsx_lustre_config: fsx_lustre.FSxLustreConfig | None = None,
+    fsx_lustre_storage_path_cache: diskcache.Index | None = None,
 ) -> Generator[DatasetUploadWorkerInput, None, List[BaseException]]:
     """
     Generates upload worker inputs in lexicographic order.
@@ -247,6 +286,8 @@ def _dataset_upload_worker_input_generator(
                 index=index,
                 entry=entry,
                 manifest_cache=manifest_cache,
+                fsx_lustre_config=fsx_lustre_config,
+                fsx_lustre_storage_path_cache=fsx_lustre_storage_path_cache,
             )
 
         return generator_errors
@@ -285,6 +326,39 @@ def dataset_upload_worker(
 
             destination: storage.StorageBackend = upload_entry.destination
             destination_data_cred = destination.resolved_data_credential
+            storage_path = os.path.join(destination.uri, etag)
+
+            if worker_input.fsx_lustre_config is not None:
+                copied = fsx_lustre.copy_file_to_fsx(
+                    source=upload_entry.source,
+                    destination_storage_path=storage_path,
+                    config=worker_input.fsx_lustre_config,
+                    progress_updater=progress_updater,
+                )
+                manifest_entry = common.ManifestEntry(
+                    relative_path=upload_entry.relative_path,
+                    storage_path=storage_path,
+                    url=os.path.join(
+                        destination.parse_uri_to_link(
+                            upload_entry.destination_region,
+                            override_url=destination_data_cred.override_url,
+                            addressing_style=destination_data_cred.addressing_style,
+                        ),
+                        etag,
+                    ),
+                    size=upload_entry.size,
+                    etag=etag,
+                )
+                _write_to_manifest_cache(manifest_entry)
+                if worker_input.fsx_lustre_storage_path_cache is not None:
+                    worker_input.fsx_lustre_storage_path_cache[worker_input.index] = storage_path
+                return storage_common.TransferWorkerOutput(
+                    retries=0,
+                    size=upload_entry.size,
+                    size_transferred=upload_entry.size if copied else 0,
+                    count=1,
+                    count_transferred=1 if copied else 0,
+                )
 
             def _callback(
                 upload_input: uploading.UploadWorkerInput,
@@ -294,7 +368,7 @@ def dataset_upload_worker(
                 # Create a manifest entry for the uploaded file.
                 manifest_entry = common.ManifestEntry(
                     relative_path=upload_entry.relative_path,
-                    storage_path=os.path.join(destination.uri, etag),
+                    storage_path=storage_path,
                     url=os.path.join(
                         destination.parse_uri_to_link(
                             upload_entry.destination_region,
@@ -368,6 +442,9 @@ def upload(
     enable_progress_tracker: bool = False,
     executor_params: executor.ExecutorParameters | None = None,
     request_headers: List[storage.RequestHeaders] | None = None,
+    fsx_lustre_config: fsx_lustre.FSxLustreConfig | None = None,
+    fsx_lustre_export_timeout_seconds: int = 300,
+    fsx_lustre_export_poll_seconds: int = 5,
 ) -> UploadOperationResult:
     """
     Uploads a dataset to a destination storage backend.
@@ -384,6 +461,11 @@ def upload(
     # This is necessary for generating a valid regional HTTP URL for uploaded objects
     # for certain storage backends (e.g. AWS S3).
     destination_region = destination.region()
+    active_fsx_lustre_config = (
+        fsx_lustre_config
+        if destination.scheme == 's3' and fsx_lustre.matches_path(storage_path, fsx_lustre_config)
+        else None
+    )
 
     client_factory = destination.client_factory(
         request_headers=request_headers,
@@ -391,6 +473,7 @@ def upload(
     )
 
     manifest_cache = diskcache.Index()
+    fsx_lustre_storage_path_cache = diskcache.Index() if active_fsx_lustre_config else None
 
     worker_input_gen = _dataset_upload_worker_input_generator(
         local_paths=upload_start_result.local_upload_paths,
@@ -399,18 +482,26 @@ def upload(
         destination_region=destination_region,
         regex=regex,
         manifest_cache=manifest_cache,
+        fsx_lustre_config=active_fsx_lustre_config,
+        fsx_lustre_storage_path_cache=fsx_lustre_storage_path_cache,
     )
 
+    upload_error: Exception | None = None
     try:
         job_ctx = executor.run_job(
             thread_worker=dataset_upload_worker,
             thread_worker_input_gen=worker_input_gen,
             client_factory=client_factory,
             enable_progress_tracker=enable_progress_tracker,
-            executor_params=executor_params,
+            executor_params=fsx_lustre_executor_params(
+                executor_params,
+                active_fsx_lustre_config,
+            ),
         )
+        raise_fsx_lustre_worker_errors(job_ctx, active_fsx_lustre_config)
 
     except Exception as error:  # pylint: disable=broad-except
+        upload_error = error
         raise osmo_errors.OSMODatasetError(
             f'Error uploading dataset: {error}',
         ) from error
@@ -418,12 +509,36 @@ def upload(
     finally:
         # Write the manifest file to the destination storage backend,
         # even if we only have partial uploads.
-        checksum = common.finalize_manifest(
-            manifest_cache=manifest_cache,
-            manifest_path=upload_start_result.upload_response['manifest_path'],
-            enable_progress_tracker=enable_progress_tracker,
-        )
+        if upload_error is None or len(manifest_cache) > 0:
+            manifest_path = upload_start_result.upload_response['manifest_path']
+            if active_fsx_lustre_config is not None:
+                checksum = fsx_lustre.finalize_manifest_to_fsx(
+                    manifest_cache=manifest_cache,
+                    manifest_path=manifest_path,
+                    config=active_fsx_lustre_config,
+                    enable_progress_tracker=enable_progress_tracker,
+                )
+                if fsx_lustre_storage_path_cache is None:
+                    raise osmo_errors.OSMODatasetError(
+                        'FSx Lustre upload storage path cache was not initialized.',
+                    )
+                fsx_lustre.wait_for_exported_objects(
+                    [
+                        fsx_lustre_storage_path_cache[index]
+                        for index in sorted(fsx_lustre_storage_path_cache.keys())
+                    ] + [manifest_path],
+                    timeout_seconds=fsx_lustre_export_timeout_seconds,
+                    poll_seconds=fsx_lustre_export_poll_seconds,
+                )
+            else:
+                checksum = common.finalize_manifest(
+                    manifest_cache=manifest_cache,
+                    manifest_path=manifest_path,
+                    enable_progress_tracker=enable_progress_tracker,
+                )
         manifest_cache.clear()
+        if fsx_lustre_storage_path_cache is not None:
+            fsx_lustre_storage_path_cache.clear()
 
     return UploadOperationResult(
         checksum=checksum,

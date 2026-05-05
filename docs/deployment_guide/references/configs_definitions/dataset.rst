@@ -76,7 +76,7 @@ Bucket
      - ``None``
    * - ``fsx_lustre``
      - `FSx Lustre`_/null
-     - Existing FSx for Lustre mount configuration for read-only S3-backed dataset inputs.
+     - Existing FSx for Lustre mount configuration for S3-backed dataset inputs, outputs, and updates.
      - ``None``
 
 FSx Lustre
@@ -92,10 +92,13 @@ FSx Lustre
      - **Default Values**
    * - ``mount_path``
      - String
-     - Absolute path mounted into both ``osmo-ctrl`` and the user container. This path must correspond to the bucket's ``dataset_path`` prefix in the externally managed FSx for Lustre file system.
+     - Absolute path mounted into ``osmo-ctrl`` and, for dataset inputs, the user container. Dataset outputs and updates require the ``osmo-ctrl`` mount to be writable. This path must correspond to the bucket's ``dataset_path`` prefix in the externally managed FSx for Lustre file system.
      - Required field
 
 ``fsx_lustre`` is only valid for buckets whose ``dataset_path`` starts with ``s3://``.
 OSMO uses the S3 dataset manifest as the source of truth, then maps each manifest
 ``storage_path`` under ``dataset_path`` to the configured FSx for Lustre
-``mount_path`` when a task resolves to ``downloadType: fsx-lustre``.
+``mount_path`` when a task resolves to ``downloadType: fsx-lustre``. Dataset
+outputs and updates write content-addressed objects and manifests through the
+same mapping, then wait for the corresponding S3 objects to become visible
+before the dataset version is completed.

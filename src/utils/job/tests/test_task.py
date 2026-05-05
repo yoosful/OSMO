@@ -468,6 +468,7 @@ class FSxLustrePodSpecTest(unittest.TestCase):
         bucket_config: connectors.BucketConfig,
         parsed_pod_template: Dict[str, Any],
         inputs: List[Dict[str, Any]] | None = None,
+        outputs: List[Dict[str, Any]] | None = None,
     ):
         workflow_uuid = common.generate_unique_id()
         task_uuid = common.generate_unique_id()
@@ -509,6 +510,7 @@ class FSxLustrePodSpecTest(unittest.TestCase):
             image='ubuntu:latest',
             command=['echo'],
             inputs=inputs if inputs is not None else [{'dataset': {'name': 'training/images'}}],
+            outputs=outputs or [],
             downloadType='fsx-lustre',
             resources=connectors.ResourceSpec(
                 cpu=1,
@@ -699,6 +701,166 @@ class FSxLustrePodSpecTest(unittest.TestCase):
         self.assertNotIn(
             f'{task.OSMO_CONFIG_MOUNT_DIR}/{task.FSX_LUSTRE_CONFIG_FILENAME}',
             {file.path for file in files.values()})
+
+    def test_fsx_lustre_dataset_output_requires_writable_ctrl_mount(self):
+        bucket_config = connectors.BucketConfig(
+            dataset_path='s3://dataset-bucket/datasets',
+            fsx_lustre={'mount_path': '/mnt/osmo-fsx/datasets'},
+        )
+        parsed_pod_template = {
+            'spec': {
+                'containers': [
+                    {'name': 'osmo-ctrl',
+                     'volumeMounts': [{
+                         'name': 'fsx',
+                         'mountPath': '/mnt/osmo-fsx',
+                         'readOnly': True,
+                     }]},
+                    {'name': 'train'},
+                ],
+            },
+        }
+        (task_group, task_obj, task_spec, workflow_uuid, workflow_config, service_config,
+         dataset_config, pool_info, k8s_factory, pod_list, postgres) = self._build_convert_inputs(
+            bucket_config,
+            parsed_pod_template,
+            inputs=[],
+            outputs=[{'dataset': {'name': 'training/output'}}])
+
+        with mock.patch('src.utils.connectors.PostgresConnector.get_instance',
+                        return_value=postgres), \
+             self.assertRaises(osmo_errors.OSMOUsageError):
+            task_group.convert_to_pod_spec(
+                task_obj, task_spec, workflow_uuid, 'test-user', 'pool',
+                task.task_common.WorkflowPlugins(),
+                k8s_factory, pod_list, workflow_config, mock.MagicMock(),
+                task.wf_priority.WorkflowPriority.NORMAL,
+                service_config, dataset_config, pool_info, {}, auth_token='token')
+
+    def test_fsx_lustre_dataset_output_allows_ctrl_only_writable_mount(self):
+        mount_path = '/mnt/osmo-fsx/datasets'
+        bucket_config = connectors.BucketConfig(
+            dataset_path='s3://dataset-bucket/datasets',
+            fsx_lustre={'mount_path': mount_path},
+        )
+        parsed_pod_template = {
+            'spec': {
+                'containers': [
+                    {'name': 'osmo-ctrl',
+                     'volumeMounts': [{'name': 'fsx', 'mountPath': '/mnt/osmo-fsx'}]},
+                    {'name': 'train'},
+                ],
+            },
+        }
+        (task_group, task_obj, task_spec, workflow_uuid, workflow_config, service_config,
+         dataset_config, pool_info, k8s_factory, pod_list, postgres) = self._build_convert_inputs(
+            bucket_config,
+            parsed_pod_template,
+            inputs=[],
+            outputs=[{'dataset': {'name': 'training/output'}}])
+
+        with mock.patch('src.utils.connectors.PostgresConnector.get_instance',
+                        return_value=postgres):
+            pod, files, _ = task_group.convert_to_pod_spec(
+                task_obj,
+                task_spec,
+                workflow_uuid,
+                user='test-user',
+                pool='pool',
+                workflow_plugins=task.task_common.WorkflowPlugins(),
+                k8s_factory=k8s_factory,
+                pod_list=pod_list,
+                workflow_config=workflow_config,
+                backend_config=mock.MagicMock(),
+                priority=task.wf_priority.WorkflowPriority.NORMAL,
+                service_config=service_config,
+                dataset_config=dataset_config,
+                pool_info=pool_info,
+                data_endpoints={},
+                auth_token='token',
+            )
+
+        containers = {container['name']: container for container in pod['spec']['containers']}
+        ctrl_args = containers['osmo-ctrl']['args']
+        self.assertIn('/mnt/osmo-fsx', [
+            mount['mountPath']
+            for mount in containers['osmo-ctrl'].get('volumeMounts', [])
+        ])
+        self.assertIn('-fsxLustreConfig', ctrl_args)
+        self.assertIn(
+            f'{task.OSMO_CONFIG_MOUNT_DIR}/{task.FSX_LUSTRE_CONFIG_FILENAME}',
+            ctrl_args,
+        )
+        fsx_files = [
+            file for file in files.values()
+            if file.path == f'{task.OSMO_CONFIG_MOUNT_DIR}/{task.FSX_LUSTRE_CONFIG_FILENAME}'
+        ]
+        self.assertEqual(len(fsx_files), 1)
+        config_payload = json.loads(base64.b64decode(fsx_files[0].content).decode('utf-8'))
+        self.assertEqual(config_payload['mounts'][0]['mount_path'], mount_path)
+
+    def test_fsx_lustre_update_dataset_output_generates_config_file(self):
+        mount_path = '/mnt/osmo-fsx/datasets'
+        bucket_config = connectors.BucketConfig(
+            dataset_path='s3://dataset-bucket/datasets',
+            fsx_lustre={'mount_path': mount_path},
+        )
+        parsed_pod_template = {
+            'spec': {
+                'containers': [
+                    {'name': 'osmo-ctrl',
+                     'volumeMounts': [{'name': 'fsx', 'mountPath': '/mnt/osmo-fsx'}]},
+                    {'name': 'train'},
+                ],
+            },
+        }
+        (task_group, task_obj, task_spec, workflow_uuid, workflow_config, service_config,
+         dataset_config, pool_info, k8s_factory, pod_list, postgres) = self._build_convert_inputs(
+            bucket_config,
+            parsed_pod_template,
+            inputs=[],
+            outputs=[{
+                'update_dataset': {
+                    'name': 'training/output:1',
+                    'paths': ['added'],
+                },
+            }])
+
+        with mock.patch('src.utils.connectors.PostgresConnector.get_instance',
+                        return_value=postgres):
+            pod, files, _ = task_group.convert_to_pod_spec(
+                task_obj,
+                task_spec,
+                workflow_uuid,
+                user='test-user',
+                pool='pool',
+                workflow_plugins=task.task_common.WorkflowPlugins(),
+                k8s_factory=k8s_factory,
+                pod_list=pod_list,
+                workflow_config=workflow_config,
+                backend_config=mock.MagicMock(),
+                priority=task.wf_priority.WorkflowPriority.NORMAL,
+                service_config=service_config,
+                dataset_config=dataset_config,
+                pool_info=pool_info,
+                data_endpoints={},
+                auth_token='token',
+            )
+
+        containers = {container['name']: container for container in pod['spec']['containers']}
+        ctrl_args = containers['osmo-ctrl']['args']
+        self.assertIn('-fsxLustreConfig', ctrl_args)
+        self.assertIn(
+            f'{task.OSMO_CONFIG_MOUNT_DIR}/{task.FSX_LUSTRE_CONFIG_FILENAME}',
+            ctrl_args,
+        )
+        fsx_files = [
+            file for file in files.values()
+            if file.path == f'{task.OSMO_CONFIG_MOUNT_DIR}/{task.FSX_LUSTRE_CONFIG_FILENAME}'
+        ]
+        self.assertEqual(len(fsx_files), 1)
+        config_payload = json.loads(base64.b64decode(fsx_files[0].content).decode('utf-8'))
+        self.assertEqual(config_payload['mounts'][0]['mount_path'], mount_path)
 
 
 def _summary(status: str, lead: bool, count: int = 1) -> Dict:

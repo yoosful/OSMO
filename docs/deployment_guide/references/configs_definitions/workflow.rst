@@ -160,7 +160,7 @@ Workflow Data
      - ``10``
    * - ``download_type``
      - String
-     - Default input data mode for workflow tasks. Supported values are ``download`` and ``fsx-lustre``. ``fsx-lustre`` applies only to S3-backed dataset inputs with bucket ``fsx_lustre`` configuration; URL inputs, task inputs, and outputs continue to use the normal download/upload paths.
+     - Default dataset data mode for workflow tasks. Supported values are ``download`` and ``fsx-lustre``. ``fsx-lustre`` applies to S3-backed dataset inputs, outputs, and updates with bucket ``fsx_lustre`` configuration; URL inputs, task inputs, URL outputs, task outputs, and KPI outputs continue to use their normal paths.
      - ``download``
 
 

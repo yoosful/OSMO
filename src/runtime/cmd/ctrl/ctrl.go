@@ -1134,7 +1134,8 @@ func downloadInputs(c net.Conn, inputs common.ArrayFlags, inputPath string,
 func uploadOutputs(c net.Conn, outputs common.ArrayFlags,
 	outputPath string, metadataFile string, osmoChan chan string,
 	metricChan chan metrics.Metric, retryId string, groupName string,
-	taskName string, userConfig string, serviceConfig string, configLoc string) {
+	taskName string, userConfig string, serviceConfig string, configLoc string,
+	downloadType string, fsxLustreConfigPath string) {
 
 	osmoChan <- "Upload Start"
 
@@ -1172,14 +1173,16 @@ func uploadOutputs(c net.Conn, outputs common.ArrayFlags,
 		if datasetInfo, isTypeDataset := outputInfo.(*data.DatasetOutput); isTypeDataset {
 			datasetInfo.MetadataFile = metadataFile
 			datasetInfo.UploadFolder(c, outputPath, osmoChan, metricChan, retryId, groupName,
-				taskName, outputType.GetUrlIdentifier(), outputIndex)
+				taskName, outputType.GetUrlIdentifier(), outputIndex, downloadType,
+				fsxLustreConfigPath)
 
 		} else if updateDatasetInfo, isTypeUpdateDataset :=
 			outputInfo.(*data.UpdateDatasetOutput); isTypeUpdateDataset {
 
 			updateDatasetInfo.MetadataFile = metadataFile
 			updateDatasetInfo.UploadFolder(c, outputPath, osmoChan, metricChan, retryId, groupName,
-				taskName, outputType.GetUrlIdentifier(), outputIndex)
+				taskName, outputType.GetUrlIdentifier(), outputIndex, downloadType,
+				fsxLustreConfigPath)
 
 		} else if kpiInfo, isTypeKpi := outputInfo.(*data.KpiOutput); isTypeKpi {
 			kpiPath := outputPath + kpiInfo.Path
@@ -1188,12 +1191,14 @@ func uploadOutputs(c net.Conn, outputs common.ArrayFlags,
 			} else {
 				// kpi file exists
 				outputInfo.UploadFolder(c, outputPath, osmoChan, metricChan, retryId, groupName,
-					taskName, outputType.GetUrlIdentifier(), outputIndex)
+					taskName, outputType.GetUrlIdentifier(), outputIndex, downloadType,
+					fsxLustreConfigPath)
 			}
 
 		} else {
 			outputInfo.UploadFolder(c, outputPath, osmoChan, metricChan, retryId, groupName,
-				taskName, outputType.GetUrlIdentifier(), outputIndex)
+				taskName, outputType.GetUrlIdentifier(), outputIndex, downloadType,
+				fsxLustreConfigPath)
 		}
 	}
 
@@ -1493,7 +1498,8 @@ execLogs:
 	outputStartTime := time.Now().Format("2006-01-02 15:04:05.000")
 	uploadOutputs(unixConn, cmdArgs.Outputs, cmdArgs.OutputPath, cmdArgs.MetadataFile,
 		uploadChan, metricChan, cmdArgs.RetryId, cmdArgs.GroupName, cmdArgs.LogSource,
-		cmdArgs.UserConfig, cmdArgs.ServiceConfig, cmdArgs.ConfigLoc)
+		cmdArgs.UserConfig, cmdArgs.ServiceConfig, cmdArgs.ConfigLoc, cmdArgs.DownloadType,
+		cmdArgs.FSxLustreConfig)
 	outputEndTime := time.Now().Format("2006-01-02 15:04:05.000")
 	uploadTimes := metrics.GroupMetrics{
 		RetryId:    cmdArgs.RetryId,

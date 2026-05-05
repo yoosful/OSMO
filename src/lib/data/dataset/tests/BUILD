@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,21 +14,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Module for working with datasets.
-"""
+load("//bzl:py.bzl", "osmo_py_test")
+load("@osmo_python_deps//:requirements.bzl", "requirement")
 
-from .common import (
-    DownloadResponse,
-    UpdateStartResult,
-    UploadResponse,
-    UploadStartResult,
-    construct_download_api_path,
-    get_user_bucket,
+osmo_py_test(
+    name = "test_fsx_lustre",
+    srcs = ["test_fsx_lustre.py"],
+    deps = [
+        "//src/lib/data/dataset",
+        "//src/lib/data/storage",
+        requirement("diskcache"),
+    ],
 )
-from .fsx_lustre import (
-    FSxLustreConfig,
-    FSxLustreMount,
-    load_config as load_fsx_lustre_config,
-)
-from .manager import Manager

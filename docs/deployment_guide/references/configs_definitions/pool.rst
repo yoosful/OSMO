@@ -74,7 +74,7 @@ Pool
      - ``None``
    * - ``download_type``
      - String/null
-     - Default input data mode for tasks in this pool. Supported values are ``download`` and ``fsx-lustre``. When unset, tasks inherit the workflow ``download_type``. ``fsx-lustre`` applies only to S3-backed dataset inputs with bucket ``fsx_lustre`` configuration.
+     - Default dataset data mode for tasks in this pool. Supported values are ``download`` and ``fsx-lustre``. When unset, tasks inherit the workflow ``download_type``. ``fsx-lustre`` applies to S3-backed dataset inputs, outputs, and updates with bucket ``fsx_lustre`` configuration.
      - Inherited from ``download_type`` workflow config
    * - ``default_exec_timeout``
      - String

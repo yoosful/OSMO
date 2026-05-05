@@ -114,3 +114,30 @@ func TestLinkFSxLustreManifestFailsWhenSourceMissing(t *testing.T) {
 		t.Fatalf("error = %q, want missing FSx Lustre source context", err.Error())
 	}
 }
+
+func TestAppendFSxLustreDatasetWriteArgs(t *testing.T) {
+	got := AppendFSxLustreDatasetWriteArgs(
+		[]string{"osmo", "dataset", "upload"},
+		FSxLustre,
+		"/osmo/fsx_lustre_config.json",
+	)
+	want := []string{
+		"osmo",
+		"dataset",
+		"upload",
+		"--fsx-lustre-config",
+		"/osmo/fsx_lustre_config.json",
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("AppendFSxLustreDatasetWriteArgs = %#v, want %#v", got, want)
+	}
+
+	got = AppendFSxLustreDatasetWriteArgs(
+		[]string{"osmo", "dataset", "upload"},
+		Download,
+		"/osmo/fsx_lustre_config.json",
+	)
+	if len(got) != 3 {
+		t.Fatalf("Download mode should not append FSx args: %#v", got)
+	}
+}

@@ -64,11 +64,11 @@ This section provides additional advanced configurations to customize and optimi
 
           File synchronization configuration for seamless data transfer in workflows.
 
-      .. grid-item-card:: :octicon:`server` FSx Lustre Dataset Inputs
+      .. grid-item-card:: :octicon:`server` FSx Lustre Dataset I/O
           :link: ./fsx_lustre_dataset_inputs
           :link-type: doc
 
-          Read S3-backed dataset inputs through an externally managed FSx for Lustre mount.
+          Read and write S3-backed datasets through an externally managed FSx for Lustre mount.
 
       .. grid-item-card:: :octicon:`shield-lock` Pool-Wide Workload Identity
           :link: ./workflow_pod_workload_identity
