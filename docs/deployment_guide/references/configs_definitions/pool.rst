@@ -1,6 +1,5 @@
 ..
-  SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
-  All rights reserved.
+  SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.  # pylint: disable=line-too-long
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -73,6 +72,10 @@ Pool
      - String
      - Default platform identifier to use for tasks in this pool.
      - ``None``
+   * - ``download_type``
+     - String/null
+     - Default dataset data mode for tasks in this pool. Supported values are ``download`` and ``fsx-lustre``. When unset, tasks inherit the workflow ``download_type``. ``fsx-lustre`` applies to S3-backed dataset inputs, outputs, and updates with bucket ``fsx_lustre`` configuration.
+     - Inherited from ``download_type`` workflow config
    * - ``default_exec_timeout``
      - String
      - Default per-group execution timeout, applied independently to each group's RUNNING phase. Must be in the format of <integer><unit> (for example, 10m, 1h, 1d).

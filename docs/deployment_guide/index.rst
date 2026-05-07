@@ -148,6 +148,7 @@ An OSMO deployment consists of two main components:
   advanced_config/group_template
   advanced_config/scheduler
   advanced_config/rsync
+  advanced_config/fsx_lustre_dataset_inputs
   advanced_config/workflow_pod_workload_identity
 
 .. toctree::

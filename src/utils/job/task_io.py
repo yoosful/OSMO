@@ -28,6 +28,7 @@ from src.utils import connectors
 class DownloadTypeMetrics(enum.Enum):
     """ Type of Download Metrics use """
     DOWNLOAD = 'download'
+    FSX_LUSTRE = 'fsx-lustre'
     MOUNTPOINT = 'mountpoint-s3'
     MOUNTPOINT_FALLBACK = 'mountpoint-s3-fallback'
     MOUNTPOINT_FAILED = 'mountpoint-s3-failed'

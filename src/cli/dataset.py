@@ -163,6 +163,9 @@ def upload_dataset(
     quiet: bool = False,
     benchmark_out: str | None = None,
     executor_params: storage_lib.ExecutorParameters | None = None,
+    fsx_lustre_config_path: str | None = None,
+    fsx_lustre_export_timeout_seconds: int = 300,
+    fsx_lustre_export_poll_seconds: int = 5,
 ) -> dataset_lib.UploadResponse:
     """
     Upload a dataset
@@ -214,6 +217,9 @@ def upload_dataset(
         upload_start_result,
         regex=regex,
         labels=labels_to_set,
+        fsx_lustre_config=dataset_lib.load_fsx_lustre_config(fsx_lustre_config_path),
+        fsx_lustre_export_timeout_seconds=fsx_lustre_export_timeout_seconds,
+        fsx_lustre_export_poll_seconds=fsx_lustre_export_poll_seconds,
     )
 
     return upload_result.upload_response
@@ -240,6 +246,9 @@ def _run_upload_command(service_client: client.ServiceClient, args: argparse.Nam
             num_processes=args.processes,
             num_threads=args.threads,
         ),
+        fsx_lustre_config_path=args.fsx_lustre_config,
+        fsx_lustre_export_timeout_seconds=args.fsx_lustre_export_timeout_seconds,
+        fsx_lustre_export_poll_seconds=args.fsx_lustre_export_poll_seconds,
     )
 
 
@@ -313,6 +322,9 @@ def _run_update_command(service_client: client.ServiceClient, args: argparse.Nam
     dataset_manager.update(
         update_start_result,
         labels=labels_to_set,
+        fsx_lustre_config=dataset_lib.load_fsx_lustre_config(args.fsx_lustre_config),
+        fsx_lustre_export_timeout_seconds=args.fsx_lustre_export_timeout_seconds,
+        fsx_lustre_export_poll_seconds=args.fsx_lustre_export_poll_seconds,
     )
 
 
@@ -1100,6 +1112,16 @@ def setup_parser(parser: argparse._SubParsersAction):
                                     f'Defaults to {storage_lib.DEFAULT_NUM_THREADS}')
     upload_parser.add_argument('--benchmark-out', '-b',
                                help='Path to folder where benchmark data will be written to.')
+    upload_parser.add_argument('--fsx-lustre-config',
+                               help=argparse.SUPPRESS)
+    upload_parser.add_argument('--fsx-lustre-export-timeout-seconds',
+                               type=int,
+                               default=300,
+                               help=argparse.SUPPRESS)
+    upload_parser.add_argument('--fsx-lustre-export-poll-seconds',
+                               type=int,
+                               default=5,
+                               help=argparse.SUPPRESS)
     upload_parser.set_defaults(func=_run_upload_command)
 
     # Handle 'delete' command
@@ -1210,6 +1232,16 @@ def setup_parser(parser: argparse._SubParsersAction):
                                     f'Defaults to {storage_lib.DEFAULT_NUM_THREADS}')
     update_parser.add_argument('--benchmark-out', '-b',
                                help='Path to folder where benchmark data will be written to.')
+    update_parser.add_argument('--fsx-lustre-config',
+                               help=argparse.SUPPRESS)
+    update_parser.add_argument('--fsx-lustre-export-timeout-seconds',
+                               type=int,
+                               default=300,
+                               help=argparse.SUPPRESS)
+    update_parser.add_argument('--fsx-lustre-export-poll-seconds',
+                               type=int,
+                               default=5,
+                               help=argparse.SUPPRESS)
     update_parser.set_defaults(func=_run_update_command)
 
     # Handle 'recollect' command

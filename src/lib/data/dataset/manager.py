@@ -25,7 +25,7 @@ from typing import Dict, List
 
 import pydantic
 
-from . import common, downloading, migrating, updating, uploading
+from . import common, downloading, fsx_lustre, migrating, updating, uploading
 from .. import storage
 from ...utils import (
     client,
@@ -291,6 +291,9 @@ class Manager(pydantic.BaseModel):
         regex: str | None = None,
         request_headers: List[storage.RequestHeaders] | None = None,
         labels: Dict[str, common.JSONValue] | None = None,
+        fsx_lustre_config: fsx_lustre.FSxLustreConfig | None = None,
+        fsx_lustre_export_timeout_seconds: int = 300,
+        fsx_lustre_export_poll_seconds: int = 5,
     ) -> common.UploadResult:
         """
         Uploads data to the dataset.
@@ -317,6 +320,9 @@ class Manager(pydantic.BaseModel):
             enable_progress_tracker=self.enable_progress_tracker,
             executor_params=self.executor_params,
             request_headers=request_headers,
+            fsx_lustre_config=fsx_lustre_config,
+            fsx_lustre_export_timeout_seconds=fsx_lustre_export_timeout_seconds,
+            fsx_lustre_export_poll_seconds=fsx_lustre_export_poll_seconds,
         )
 
         # Mark Upload as Done
@@ -496,6 +502,9 @@ class Manager(pydantic.BaseModel):
         *,
         request_headers: List[storage.RequestHeaders] | None = None,
         labels: Dict[str, common.JSONValue] | None = None,
+        fsx_lustre_config: fsx_lustre.FSxLustreConfig | None = None,
+        fsx_lustre_export_timeout_seconds: int = 300,
+        fsx_lustre_export_poll_seconds: int = 5,
     ) -> common.UploadResult:
         """
         Updates a dataset.
@@ -530,6 +539,9 @@ class Manager(pydantic.BaseModel):
             enable_progress_tracker=self.enable_progress_tracker,
             executor_params=self.executor_params,
             request_headers=request_headers,
+            fsx_lustre_config=fsx_lustre_config,
+            fsx_lustre_export_timeout_seconds=fsx_lustre_export_timeout_seconds,
+            fsx_lustre_export_poll_seconds=fsx_lustre_export_poll_seconds,
         )
 
         # Marks Update as Done

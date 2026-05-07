@@ -59,13 +59,24 @@ type InputType interface {
 	GetFolder() string
 	CreateMount(c net.Conn, inputPath string, credentialInfo ConfigInfo, osmoChan chan string,
 		metricChan chan metrics.Metric, retryId string, groupName string, taskName string,
-		downloadType string, inputIndex int, cacheSize int)
+		downloadType string, inputIndex int, cacheSize int, fsxLustreConfig FSxLustreConfig)
 }
 
 type OutputType interface {
 	UploadFolder(c net.Conn, outputPath string, osmoChan chan string,
 		metricChan chan metrics.Metric, retryId string, groupName string, taskName string,
-		outputUrlID string, outputIndex int)
+		outputUrlID string, outputIndex int, downloadType string, fsxLustreConfigPath string)
+}
+
+func AppendFSxLustreDatasetWriteArgs(
+	commandArgs []string,
+	downloadType string,
+	fsxLustreConfigPath string,
+) []string {
+	if downloadType != FSxLustre || fsxLustreConfigPath == "" {
+		return commandArgs
+	}
+	return append(commandArgs, "--fsx-lustre-config", fsxLustreConfigPath)
 }
 
 // Define "task" input/output
@@ -83,8 +94,11 @@ func (f TaskInput) GetFolder() string        { return f.Folder }
 func (f TaskInput) CreateMount(c net.Conn, inputPath string,
 	credentialInfo ConfigInfo, osmoChan chan string, metricChan chan metrics.Metric,
 	retryId string, groupName string, taskName string, downloadType string, inputIndex int,
-	cacheSize int) {
+	cacheSize int, fsxLustreConfig FSxLustreConfig) {
 
+	if downloadType == FSxLustre {
+		downloadType = Download
+	}
 	mountPath := CreateFolder(inputPath, f.Folder)
 	inputType := "Mounted"
 
@@ -153,7 +167,7 @@ func (f TaskOutput) GetLogInfo() string       { return f.Name }
 func (f TaskOutput) GetUrlIdentifier() string { return f.Url }
 func (f *TaskOutput) UploadFolder(c net.Conn, outputPath string, osmoChan chan string,
 	metricChan chan metrics.Metric, retryId string, groupName string, taskName string,
-	outputUrlID string, outputIndex int) {
+	outputUrlID string, outputIndex int, downloadType string, fsxLustreConfigPath string) {
 
 	benchmarkFolder := fmt.Sprintf("OUTPUT_%d", outputIndex)
 	benchmarks := UploadData(f.Url, outputPath+"*", "", osmoChan, benchmarkFolder)
@@ -198,7 +212,7 @@ func (f DatasetInput) GetFolder() string {
 func (f DatasetInput) CreateMount(c net.Conn, inputPath string,
 	credentialInfo ConfigInfo, osmoChan chan string, metricChan chan metrics.Metric,
 	retryId string, groupName string, taskName string, downloadType string, inputIndex int,
-	cacheSize int) {
+	cacheSize int, fsxLustreConfig FSxLustreConfig) {
 
 	if !strings.HasSuffix(inputPath, "/") {
 		inputPath += "/"
@@ -227,19 +241,61 @@ func (f DatasetInput) CreateMount(c net.Conn, inputPath string,
 	}
 
 	for _, versionInfo := range datasetInfo.Versions {
+		datasetVersionInfo := versionInfo
+		datasetID := datasetVersionInfo.Name
+		var hashesUri string
+		if datasetInfo.Type == "COLLECTION" {
+			hashesUri = datasetVersionInfo.HashLocation
+		} else {
+			hashesUri = datasetInfo.HashLocation
+		}
 
-		if downloadType == Mountpoint {
+		if downloadType == FSxLustre && strings.HasPrefix(hashesUri, S3+"://") {
+			inputType = "Linked"
+
+			// Download Manifest
+			osmoChan <- fmt.Sprintf("Downloading dataset %s manifest.", datasetID)
+
+			manifestFileLoc := CreateFolder(inputPath, fmt.Sprintf("%s-manifest", f.Folder))
+
+			benchmarkFolder := fmt.Sprintf("%s_%s_INPUT_%d", groupName, taskName, inputIndex)
+			benchmarkPath := BenchmarkPath + benchmarkFolder
+			linkCommand := []string{"osmo", "data", "download", datasetVersionInfo.Uri,
+				manifestFileLoc, "--processes", CpuCount, "--benchmark-out", benchmarkPath}
+
+			RunOSMOCommandStreamingWithRetry(linkCommand, linkCommand, 5,
+				osmoChan, osmo_errors.DOWNLOAD_FAILED_CODE)
+
+			manifestFilePath := manifestFileLoc + "/" + filepath.Base(datasetVersionInfo.Uri)
+			datasetFolderPath := downloadPath + "/" + datasetVersionInfo.Name
+			destination := datasetFolderPath + "/"
+
+			osmoChan <- fmt.Sprintf("Linking dataset %s manifest from FSx Lustre.", datasetID)
+			inputStartTime := time.Now().Format("2006-01-02 15:04:05.000")
+			linkedFiles, err := LinkFSxLustreManifest(
+				manifestFilePath, fsxLustreConfig, destination, f.Regex)
+			inputEndTime := time.Now().Format("2006-01-02 15:04:05.000")
+			if err != nil {
+				osmo_errors.LogError("", "", osmoChan, err, osmo_errors.DOWNLOAD_FAILED_CODE)
+			}
+			osmoChan <- fmt.Sprintf("Linked %d files for %s from FSx Lustre", linkedFiles, datasetID)
+
+			metricsWG.Add(1)
+			go writeMetrics(metrics.TaskIOMetrics{
+				RetryId:       retryId,
+				GroupName:     groupName,
+				TaskName:      taskName,
+				URL:           versionInfo.Uri,
+				Type:          "INPUT",
+				StartTime:     inputStartTime,
+				EndTime:       inputEndTime,
+				NumberOfFiles: linkedFiles,
+				OperationType: DatasetOperation,
+				DownloadType:  downloadType,
+			})
+		} else if downloadType == Mountpoint {
 			isAllEmpty := false
 			isAnyEmpty := false
-
-			datasetVersionInfo := versionInfo
-			datasetID := datasetVersionInfo.Name
-			var hashesUri string
-			if datasetInfo.Type == "COLLECTION" {
-				hashesUri = datasetVersionInfo.HashLocation
-			} else {
-				hashesUri = datasetInfo.HashLocation
-			}
 
 			// Download Manifest
 			osmoChan <- fmt.Sprintf("Downloading dataset %s manifest.", datasetID)
@@ -360,6 +416,10 @@ func (f DatasetInput) CreateMount(c net.Conn, inputPath string,
 			}
 		} else {
 			inputType = "Downloaded"
+			localDownloadType := downloadType
+			if downloadType == FSxLustre {
+				localDownloadType = Download
+			}
 
 			inputDataset := versionInfo.Name + ":" + versionInfo.Version
 			// Append bucket info to the dataset
@@ -403,7 +463,7 @@ func (f DatasetInput) CreateMount(c net.Conn, inputPath string,
 					SizeInBytes:   int64(benchmark.TotalBytesTransferred),
 					NumberOfFiles: benchmark.TotalNumberOfFiles,
 					OperationType: DatasetOperation,
-					DownloadType:  downloadType,
+					DownloadType:  localDownloadType,
 				})
 			}
 		}
@@ -432,7 +492,7 @@ func (f DatasetOutput) GetLogInfo() string       { return f.Dataset }
 func (f DatasetOutput) GetUrlIdentifier() string { return f.Url }
 func (f *DatasetOutput) UploadFolder(c net.Conn, outputPath string, osmoChan chan string,
 	metricChan chan metrics.Metric, retryId string, groupName string, taskName string,
-	outputUrlID string, outputIndex int) {
+	outputUrlID string, outputIndex int, downloadType string, fsxLustreConfigPath string) {
 	if f.MetadataFile == "" {
 		osmo_errors.SetExitCode(osmo_errors.UPLOAD_FAILED_CODE)
 		panic("Metadata File is not Set")
@@ -473,6 +533,8 @@ func (f *DatasetOutput) UploadFolder(c net.Conn, outputPath string, osmoChan cha
 		commandArgs := []string{"osmo", "dataset", "upload", f.Dataset, "/tmp", "--start-only",
 			"--processes", CpuCount}
 		commandArgs = append(commandArgs, metadataInput...)
+		commandArgs = AppendFSxLustreDatasetWriteArgs(
+			commandArgs, downloadType, fsxLustreConfigPath)
 		outb := RunOSMOCommandWithRetry(commandArgs, 5, osmoChan, osmo_errors.UPLOAD_FAILED_CODE)
 
 		var datasetInfo DatasetStartInfo
@@ -485,6 +547,8 @@ func (f *DatasetOutput) UploadFolder(c net.Conn, outputPath string, osmoChan cha
 	benchmarkPath := BenchmarkPath + benchmarkFolder
 	commandInput := []string{"osmo", "dataset", "upload", "--resume", f.Dataset, combineOut,
 		"--processes", CpuCount, "--benchmark-out", benchmarkPath}
+	commandInput = AppendFSxLustreDatasetWriteArgs(
+		commandInput, downloadType, fsxLustreConfigPath)
 	for _, labelsFile := range f.Labels {
 		labelsFilePath := outputPath + labelsFile
 		if !common.CheckIfFileExists(labelsFilePath, osmoChan) {
@@ -548,7 +612,7 @@ func (f UpdateDatasetOutput) GetLogInfo() string       { return f.Dataset }
 func (f UpdateDatasetOutput) GetUrlIdentifier() string { return f.Url }
 func (f *UpdateDatasetOutput) UploadFolder(c net.Conn, outputPath string, osmoChan chan string,
 	metricChan chan metrics.Metric, retryId string, groupName string, taskName string,
-	outputUrlID string, outputIndex int) {
+	outputUrlID string, outputIndex int, downloadType string, fsxLustreConfigPath string) {
 	if f.MetadataFile == "" {
 		osmo_errors.SetExitCode(osmo_errors.UPLOAD_FAILED_CODE)
 		panic("Metadata File is not Set")
@@ -595,6 +659,8 @@ func (f *UpdateDatasetOutput) UploadFolder(c net.Conn, outputPath string, osmoCh
 		commandArgs := []string{"osmo", "dataset", "update", f.Dataset, "--start-only",
 			"--add", "/tmp", "--processes", CpuCount}
 		commandArgs = append(commandArgs, metadataInput...)
+		commandArgs = AppendFSxLustreDatasetWriteArgs(
+			commandArgs, downloadType, fsxLustreConfigPath)
 		outb := RunOSMOCommandWithRetry(commandArgs, 5, osmoChan, osmo_errors.UPLOAD_FAILED_CODE)
 
 		// Fetch new version to construct resume
@@ -607,6 +673,8 @@ func (f *UpdateDatasetOutput) UploadFolder(c net.Conn, outputPath string, osmoCh
 	benchmarkPath := BenchmarkPath + benchmarkFolder
 	updateInput := []string{"osmo", "dataset", "update", f.Dataset, "--resume", datasetVersion,
 		"--processes", CpuCount, "--benchmark-out", benchmarkPath}
+	updateInput = AppendFSxLustreDatasetWriteArgs(
+		updateInput, downloadType, fsxLustreConfigPath)
 	updateInput = append(updateInput, pathsInput...)
 	for _, labelsFile := range f.Labels {
 		labelsFilePath := outputPath + labelsFile
@@ -668,8 +736,11 @@ func (f UrlInput) GetFolder() string        { return f.Folder }
 func (f UrlInput) CreateMount(c net.Conn, inputPath string,
 	credentialInfo ConfigInfo, osmoChan chan string, metricChan chan metrics.Metric,
 	retryId string, groupName string, taskName string, downloadType string, inputIndex int,
-	cacheSize int) {
+	cacheSize int, fsxLustreConfig FSxLustreConfig) {
 
+	if downloadType == FSxLustre {
+		downloadType = Download
+	}
 	mountPath := CreateFolder(inputPath, f.Folder)
 	inputType := "Mounted"
 
@@ -739,7 +810,7 @@ func (f UrlOutput) GetLogInfo() string       { return f.Url }
 func (f UrlOutput) GetUrlIdentifier() string { return f.Url }
 func (f *UrlOutput) UploadFolder(c net.Conn, outputPath string, osmoChan chan string,
 	metricChan chan metrics.Metric, retryId string, groupName string, taskName string,
-	outputUrlID string, outputIndex int) {
+	outputUrlID string, outputIndex int, downloadType string, fsxLustreConfigPath string) {
 	benchmarkFolder := fmt.Sprintf("OUTPUT_%d", outputIndex)
 	benchmarks := UploadData(f.Url, outputPath+"*", f.Regex, osmoChan, benchmarkFolder)
 
@@ -777,7 +848,7 @@ func (f KpiOutput) GetLogInfo() string       { return fmt.Sprintf("KPI: %s", f.P
 func (f KpiOutput) GetUrlIdentifier() string { return fmt.Sprintf("%s/%s", f.Url, f.Path) }
 func (f *KpiOutput) UploadFolder(c net.Conn, outputPath string, osmoChan chan string,
 	metricChan chan metrics.Metric, retryId string, groupName string, taskName string,
-	outputUrlID string, outputIndex int) {
+	outputUrlID string, outputIndex int, downloadType string, fsxLustreConfigPath string) {
 	benchmarkFolder := fmt.Sprintf("OUTPUT_%d", outputIndex)
 	benchmarks := UploadData(f.Url, outputPath+f.Path, "", osmoChan, benchmarkFolder)
 

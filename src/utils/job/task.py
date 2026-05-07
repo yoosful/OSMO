@@ -65,6 +65,7 @@ REFRESH_TOKEN_HEX_STR_LENGTH = REFRESH_TOKEN_LENGTH * 2
 VALID_TOKEN_LENGTHS = {REFRESH_TOKEN_STR_LENGTH, REFRESH_TOKEN_HEX_STR_LENGTH}
 
 REFRESH_TOKEN_FILENAME = '.refresh_token'
+FSX_LUSTRE_CONFIG_FILENAME = 'fsx_lustre_config.json'
 
 GROUP_BARRIER_NAME = 'osmo-group-ready'
 
@@ -121,6 +122,67 @@ def create_config_dict(
     }
 
     return data
+
+
+def _normalize_storage_prefix(storage_path: str) -> str:
+    return storage_path.rstrip('/') or storage_path
+
+
+def _normalize_mount_path(mount_path: str) -> str:
+    return mount_path.rstrip('/') or '/'
+
+
+def _mount_path_covers(mount_path: str, target_path: str) -> bool:
+    mount_path = _normalize_mount_path(mount_path)
+    target_path = _normalize_mount_path(target_path)
+    return mount_path == '/' or target_path == mount_path or target_path.startswith(
+        f'{mount_path}/')
+
+
+def _container_mounts_path(
+    container: Dict[str, Any],
+    target_path: str,
+    *,
+    writable: bool = False,
+) -> bool:
+    for volume_mount in container.get('volumeMounts', []):
+        mount_path = volume_mount.get('mountPath')
+        if mount_path and _mount_path_covers(mount_path, target_path):
+            if writable and volume_mount.get('readOnly', False):
+                continue
+            return True
+    return False
+
+
+def _validate_fsx_lustre_pod_mounts(
+    pod: Dict[str, Any],
+    user_container_name: str,
+    read_mount_paths: Set[str],
+    write_mount_paths: Set[str],
+):
+    containers = {
+        container.get('name'): container
+        for container in pod.get('spec', {}).get('containers', [])
+    }
+    for container_name in ('osmo-ctrl', user_container_name):
+        container = containers.get(container_name)
+        if container is None:
+            raise osmo_errors.OSMOUsageError(
+                f'FSx Lustre requires container {container_name} in the pod spec.')
+        for mount_path in read_mount_paths:
+            if not _container_mounts_path(container, mount_path):
+                raise osmo_errors.OSMOUsageError(
+                    'FSx Lustre dataset input requires both osmo-ctrl and user '
+                    f'containers to mount {mount_path}. Missing from {container_name}.')
+    ctrl_container = containers.get('osmo-ctrl')
+    if ctrl_container is None:
+        raise osmo_errors.OSMOUsageError(
+            'FSx Lustre requires container osmo-ctrl in the pod spec.')
+    for mount_path in write_mount_paths:
+        if not _container_mounts_path(ctrl_container, mount_path, writable=True):
+            raise osmo_errors.OSMOUsageError(
+                'FSx Lustre dataset output/update requires osmo-ctrl to mount '
+                f'{mount_path} as writable.')
 
 
 def shorten_name_to_fit_kb(name: str) -> str:
@@ -2753,8 +2815,50 @@ class TaskGroup(pydantic.BaseModel):
 
         input_urls: List[str] = []
         input_datasets: List[str] = []
+        fsx_lustre_mounts: Dict[str, str] = {}
+        fsx_lustre_read_mount_paths: Set[str] = set()
+        fsx_lustre_write_mount_paths: Set[str] = set()
+        default_user_bucket: str | None = None
 
         disabled_data = workflow_config.credential_config.disable_data_validation
+
+        def _resolve_dataset_bucket_name(dataset_info: common.DatasetStructure) -> str:
+            nonlocal default_user_bucket
+            if dataset_info.bucket:
+                return dataset_info.bucket
+            if default_user_bucket is None:
+                default_user_bucket = connectors.UserProfile.fetch_from_db(
+                    self.database, user).bucket
+            if default_user_bucket:
+                return default_user_bucket
+            if dataset_config.default_bucket:
+                return dataset_config.default_bucket
+            raise osmo_errors.OSMOUserError(
+                'No default bucket set. Specify default bucket using the '
+                '"osmo profile set" CLI.')
+
+        def _record_fsx_lustre_mount(
+            dataset_info: common.DatasetStructure,
+            *,
+            writable: bool,
+        ):
+            bucket_name = _resolve_dataset_bucket_name(dataset_info)
+            bucket_config = dataset_config.get_bucket_config(bucket_name)
+            bucket_storage = storage.construct_storage_backend(bucket_config.dataset_path)
+            if bucket_storage.scheme != 's3':
+                return
+            if bucket_config.fsx_lustre is None:
+                raise osmo_errors.OSMOUsageError(
+                    f'Dataset bucket {bucket_name} uses S3 storage and task '
+                    'downloadType fsx-lustre, but the bucket is missing '
+                    'fsx_lustre.mount_path.')
+            mount_path = bucket_config.fsx_lustre.mount_path
+            fsx_lustre_mounts[_normalize_storage_prefix(bucket_config.dataset_path)] = mount_path
+            if writable:
+                fsx_lustre_write_mount_paths.add(mount_path)
+            else:
+                fsx_lustre_read_mount_paths.add(mount_path)
+
         # TODO: Make extra_args a dumped json to be parsed by osmo-ctrl
         for index, spec_input in enumerate(task_spec.inputs):
             # Input/output is in the form 'folderName' + 'url'
@@ -2766,7 +2870,8 @@ class TaskGroup(pydantic.BaseModel):
                 ctrl_extra_args += ['-inputs', f'task:{index},{task_io_url},{spec_input.regex}']
             elif isinstance(spec_input, DatasetInputOutput):
                 dataset_info = common.DatasetStructure(spec_input.dataset.name)
-                bucket_info = dataset_config.get_bucket_config(dataset_info.bucket)
+                if task_spec.downloadType == connectors.DownloadType.FSX_LUSTRE:
+                    _record_fsx_lustre_mount(dataset_info, writable=False)
                 task_io_url = dataset_info.full_name
                 ctrl_extra_args += ['-inputs',
                                     f'dataset:{index},{task_io_url},{spec_input.dataset.regex}']
@@ -2793,6 +2898,8 @@ class TaskGroup(pydantic.BaseModel):
         for spec_output in task_spec.outputs:
             if isinstance(spec_output, DatasetInputOutput):
                 dataset_info = common.DatasetStructure(spec_output.dataset.name, True)
+                if task_spec.downloadType == connectors.DownloadType.FSX_LUSTRE:
+                    _record_fsx_lustre_mount(dataset_info, writable=True)
                 bucket_info = dataset_config.get_bucket_config(dataset_info.bucket)
                 task_io_url = dataset_info.full_name
                 fetch_creds(user, data_endpoints, bucket_info.dataset_path,
@@ -2805,6 +2912,8 @@ class TaskGroup(pydantic.BaseModel):
                                     spec_output.dataset.regex]
             if isinstance(spec_output, UpdateDatasetOutput):
                 dataset_info = common.DatasetStructure(spec_output.update_dataset.name, True)
+                if task_spec.downloadType == connectors.DownloadType.FSX_LUSTRE:
+                    _record_fsx_lustre_mount(dataset_info, writable=True)
                 bucket_info = dataset_config.get_bucket_config(dataset_info.bucket)
                 task_io_url = dataset_info.full_name
                 fetch_creds(user, data_endpoints, bucket_info.dataset_path,
@@ -2927,6 +3036,24 @@ class TaskGroup(pydantic.BaseModel):
         ctrl_extra_args += ['-userConfig', user_config_file.path,
                             '-serviceConfig', service_config_file.path]
 
+        fsx_lustre_config_file: File | None = None
+        if fsx_lustre_mounts:
+            fsx_lustre_config = {
+                'mounts': [
+                    {
+                        'storage_path': storage_path,
+                        'mount_path': mount_path,
+                    }
+                    for storage_path, mount_path in sorted(fsx_lustre_mounts.items())
+                ]
+            }
+            fsx_lustre_config_file = File(
+                path='/fsx_lustre_config',
+                contents=json.dumps(fsx_lustre_config, sort_keys=True))
+            fsx_lustre_config_file.path = \
+                f'{OSMO_CONFIG_MOUNT_DIR}/{FSX_LUSTRE_CONFIG_FILENAME}'
+            ctrl_extra_args += ['-fsxLustreConfig', fsx_lustre_config_file.path]
+
         # Create default metadata file
         dataset_metadata_info = {
             'default': {
@@ -2950,6 +3077,8 @@ class TaskGroup(pydantic.BaseModel):
         # Ctrl specific file mounts to be added to new file list
         control_file_mounts = [_build_file_mount(file) for file in
                                 (service_config_file, metadata_file)]
+        if fsx_lustre_config_file is not None:
+            control_file_mounts.append(_build_file_mount(fsx_lustre_config_file))
         # When we reschedule a task, we will no longer have access to the value of the
         # refresh-token here in the service. So we must hash refresh token secret by something
         # that will be consistent across reschedules.
@@ -3081,6 +3210,12 @@ class TaskGroup(pydantic.BaseModel):
         override_pod_template = copy.deepcopy(task_platform.parsed_pod_template)
         substitute_pod_template_tokens(override_pod_template, jinja_variables)
         pod = apply_pod_template(pod, override_pod_template)
+        if fsx_lustre_mounts:
+            _validate_fsx_lustre_pod_mounts(
+                pod,
+                kb_objects.k8s_name(shorten_name_to_fit_kb(task_spec.name)),
+                fsx_lustre_read_mount_paths,
+                fsx_lustre_write_mount_paths)
 
         return pod, all_files, refresh_token_info
 

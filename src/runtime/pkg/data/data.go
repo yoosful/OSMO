@@ -50,6 +50,7 @@ var MountRetryCount int = 3
 
 const (
 	Download         string = "download"
+	FSxLustre        string = "fsx-lustre"
 	Mountpoint       string = "mountpoint-s3"
 	MountpointFailed string = "mountpoint-s3-failed"
 	NotApplicable    string = "N/A"

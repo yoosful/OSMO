@@ -158,6 +158,10 @@ Workflow Data
      - Integer
      - Timeout for data operations in seconds.
      - ``10``
+   * - ``download_type``
+     - String
+     - Default dataset data mode for workflow tasks. Supported values are ``download`` and ``fsx-lustre``. ``fsx-lustre`` applies to S3-backed dataset inputs, outputs, and updates with bucket ``fsx_lustre`` configuration; URL inputs, task inputs, URL outputs, task outputs, and KPI outputs continue to use their normal paths.
+     - ``download``
 
 
 Workflow Log

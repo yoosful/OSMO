@@ -20,9 +20,10 @@ go_library(
     name = "data",
     srcs = [
         "data.go",
+        "fsx_lustre.go",
         "input_output.go",
-        "storage_backends.go"
-        ],
+        "storage_backends.go",
+    ],
     importpath = "go.corp.nvidia.com/osmo/runtime/pkg/data",
     visibility = ["//visibility:public"],
     deps = [
@@ -34,6 +35,9 @@ go_library(
 
 go_test(
     name = "data_test",
-    srcs = ["data_test.go"],
+    srcs = [
+        "data_test.go",
+        "fsx_lustre_test.go",
+    ],
     embed = [":data"],
 )
