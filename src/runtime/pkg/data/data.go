@@ -70,12 +70,57 @@ const (
 	DatasetOperation string = "Dataset"
 )
 
-func setOrUnsetEnv(key, value string) {
-	if value != "" {
-		os.Setenv(key, value)
-	} else {
-		os.Unsetenv(key)
+func envSliceToMap(env []string) map[string]string {
+	envMap := make(map[string]string, len(env))
+	for _, entry := range env {
+		key, value, found := strings.Cut(entry, "=")
+		if found {
+			envMap[key] = value
+		}
 	}
+	return envMap
+}
+
+func envMapToSlice(envMap map[string]string) []string {
+	env := make([]string, 0, len(envMap))
+	for key, value := range envMap {
+		env = append(env, key+"="+value)
+	}
+	return env
+}
+
+func awsCredentialCommandEnv(
+	baseEnv []string,
+	dataCredential DataCredential,
+	hasExplicitCredential bool,
+) []string {
+	envMap := envSliceToMap(baseEnv)
+	if !hasExplicitCredential {
+		return envMapToSlice(envMap)
+	}
+
+	usesStaticCredential := dataCredential.AccessKeyId != "" || dataCredential.AccessKey != ""
+	if usesStaticCredential {
+		if dataCredential.AccessKeyId != "" {
+			envMap["AWS_ACCESS_KEY_ID"] = dataCredential.AccessKeyId
+		} else {
+			delete(envMap, "AWS_ACCESS_KEY_ID")
+		}
+		if dataCredential.AccessKey != "" {
+			envMap["AWS_SECRET_ACCESS_KEY"] = dataCredential.AccessKey
+		} else {
+			delete(envMap, "AWS_SECRET_ACCESS_KEY")
+		}
+		delete(envMap, "AWS_SESSION_TOKEN")
+	}
+
+	if dataCredential.Region != "" {
+		envMap["AWS_REGION"] = dataCredential.Region
+	} else if usesStaticCredential {
+		delete(envMap, "AWS_REGION")
+	}
+
+	return envMapToSlice(envMap)
 }
 
 func awsForcePathStyleEnabled() bool {
@@ -503,19 +548,7 @@ func MountURL(downloadType string, credentialInfo ConfigInfo, urlPath string,
 	isEmpty := true
 	storageBackend := ParseStorageBackend(urlPath)
 
-	dataCredential, ok := credentialInfo.Auth.Data[storageBackend.GetProfile()]
-	if ok {
-		setOrUnsetEnv("AWS_ACCESS_KEY_ID", dataCredential.AccessKeyId)
-		setOrUnsetEnv("AWS_SECRET_ACCESS_KEY", dataCredential.AccessKey)
-		setOrUnsetEnv("AWS_REGION", dataCredential.Region)
-	} else {
-		// No explicit credential — clear any stale values and let the
-		// SDK resolve ambient credentials (IRSA, pod identity, etc.).
-		os.Unsetenv("AWS_ACCESS_KEY_ID")
-		os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-		os.Unsetenv("AWS_REGION")
-	}
-	os.Unsetenv("AWS_SESSION_TOKEN")
+	dataCredential, hasExplicitCredential := credentialInfo.Auth.Data[storageBackend.GetProfile()]
 
 	var commandArgs []string
 
@@ -542,6 +575,7 @@ func MountURL(downloadType string, credentialInfo ConfigInfo, urlPath string,
 
 			mountS3Path := common.ResolveCommandPath("MOUNT_S3_PATH", "mount-s3", "/usr/bin/mount-s3")
 			cmd := exec.Command(mountS3Path, commandArgs...)
+			cmd.Env = awsCredentialCommandEnv(os.Environ(), dataCredential, hasExplicitCredential)
 			cmd.Stderr = log
 			if err = cmd.Run(); err != nil {
 				if strings.Contains(err.Error(), "Timeout") {

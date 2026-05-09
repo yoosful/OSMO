@@ -17,6 +17,7 @@ SPDX-License-Identifier: Apache-2.0
 """
 import unittest
 
+from src.lib.data.storage import credentials
 from src.lib.utils import osmo_errors
 from src.utils import connectors
 
@@ -44,6 +45,32 @@ class TestCliConfig(unittest.TestCase):
         for bad in ['test-cli', 'v1.2.3', '1.2.3-rc1', '1.2', 'latest']:
             with self.subTest(bad=bad), self.assertRaises(osmo_errors.OSMOUserError):
                 connectors.CliConfig(min_supported_version=bad)
+
+
+class TestWorkflowStorageConfig(unittest.TestCase):
+    """Validation tests for workflow storage credentials."""
+
+    def test_workflow_log_accepts_default_data_credential(self):
+        log_config = connectors.LogConfig(credential={
+            'endpoint': 's3://osmo-logs',
+            'region': 'us-west-2',
+        })
+
+        credential = log_config.credential
+        if not isinstance(credential, credentials.DefaultDataCredential):
+            self.fail('workflow_log credential should use DefaultDataCredential')
+        self.assertEqual(credential.endpoint, 's3://osmo-logs')
+
+    def test_workflow_data_accepts_default_data_credential(self):
+        data_config = connectors.DataConfig(credential={
+            'endpoint': 's3://osmo-data',
+            'region': 'us-west-2',
+        })
+
+        credential = data_config.credential
+        if not isinstance(credential, credentials.DefaultDataCredential):
+            self.fail('workflow_data credential should use DefaultDataCredential')
+        self.assertEqual(credential.endpoint, 's3://osmo-data')
 
 
 if __name__ == '__main__':

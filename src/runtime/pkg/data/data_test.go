@@ -20,8 +20,87 @@ package data
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
+
+func testEnvMap(env []string) map[string]string {
+	envMap := make(map[string]string, len(env))
+	for _, entry := range env {
+		key, value, found := strings.Cut(entry, "=")
+		if found {
+			envMap[key] = value
+		}
+	}
+	return envMap
+}
+
+func requireEnvValue(t *testing.T, envMap map[string]string, key string, expected string) {
+	t.Helper()
+	if got := envMap[key]; got != expected {
+		t.Fatalf("expected %s=%q, got %q", key, expected, got)
+	}
+}
+
+func requireEnvMissing(t *testing.T, envMap map[string]string, key string) {
+	t.Helper()
+	if value, ok := envMap[key]; ok {
+		t.Fatalf("expected %s to be unset, got %q", key, value)
+	}
+}
+
+func TestAwsCredentialCommandEnvStaticCredentialOverridesAmbient(t *testing.T) {
+	env := awsCredentialCommandEnv([]string{
+		"AWS_ACCESS_KEY_ID=ambient-id",
+		"AWS_SECRET_ACCESS_KEY=ambient-secret",
+		"AWS_SESSION_TOKEN=ambient-session",
+		"AWS_REGION=us-east-1",
+		"OSMO_TEST=value",
+	}, DataCredential{
+		AccessKeyId: "static-id",
+		AccessKey:   "static-secret",
+		Region:      "us-west-2",
+	}, true)
+
+	envMap := testEnvMap(env)
+	requireEnvValue(t, envMap, "AWS_ACCESS_KEY_ID", "static-id")
+	requireEnvValue(t, envMap, "AWS_SECRET_ACCESS_KEY", "static-secret")
+	requireEnvValue(t, envMap, "AWS_REGION", "us-west-2")
+	requireEnvValue(t, envMap, "OSMO_TEST", "value")
+	requireEnvMissing(t, envMap, "AWS_SESSION_TOKEN")
+}
+
+func TestAwsCredentialCommandEnvDefaultCredentialPreservesAmbientAuth(t *testing.T) {
+	env := awsCredentialCommandEnv([]string{
+		"AWS_ACCESS_KEY_ID=ambient-id",
+		"AWS_SECRET_ACCESS_KEY=ambient-secret",
+		"AWS_SESSION_TOKEN=ambient-session",
+		"AWS_REGION=us-east-1",
+	}, DataCredential{
+		Region: "us-west-2",
+	}, true)
+
+	envMap := testEnvMap(env)
+	requireEnvValue(t, envMap, "AWS_ACCESS_KEY_ID", "ambient-id")
+	requireEnvValue(t, envMap, "AWS_SECRET_ACCESS_KEY", "ambient-secret")
+	requireEnvValue(t, envMap, "AWS_SESSION_TOKEN", "ambient-session")
+	requireEnvValue(t, envMap, "AWS_REGION", "us-west-2")
+}
+
+func TestAwsCredentialCommandEnvNoCredentialPreservesAmbientAuth(t *testing.T) {
+	env := awsCredentialCommandEnv([]string{
+		"AWS_ACCESS_KEY_ID=ambient-id",
+		"AWS_SECRET_ACCESS_KEY=ambient-secret",
+		"AWS_SESSION_TOKEN=ambient-session",
+		"AWS_REGION=us-east-1",
+	}, DataCredential{}, false)
+
+	envMap := testEnvMap(env)
+	requireEnvValue(t, envMap, "AWS_ACCESS_KEY_ID", "ambient-id")
+	requireEnvValue(t, envMap, "AWS_SECRET_ACCESS_KEY", "ambient-secret")
+	requireEnvValue(t, envMap, "AWS_SESSION_TOKEN", "ambient-session")
+	requireEnvValue(t, envMap, "AWS_REGION", "us-east-1")
+}
 
 func TestBuildMountCommandArgsS3VirtualCustomEndpoint(t *testing.T) {
 	backend := ParseStorageBackend("s3://coreweave-bucket/datasets")
